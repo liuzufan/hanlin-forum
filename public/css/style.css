@@ -129,6 +129,26 @@ a:hover { color: var(--c-burgundy-deep); }
   -webkit-text-fill-color: transparent;
 }
 
+/* 高级页面标题 - 实色 + 金色装饰线 */
+.page-title {
+  color: var(--text-primary);
+  font-weight: 800;
+  font-family: 'Noto Serif SC', serif;
+  position: relative;
+  padding-left: 16px;
+  line-height: 1.3;
+  text-shadow: 0 1px 2px rgba(255, 248, 231, 0.5);
+}
+.page-title::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 8%;
+  width: 4px; height: 84%;
+  background: linear-gradient(180deg, #C9A227 0%, #8B3A2A 100%);
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(201, 162, 39, 0.3);
+}
+
 /* --- Scrollbar --- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -326,14 +346,23 @@ a:hover { color: var(--c-burgundy-deep); }
 }
 
 /* --- Sidebar Nav --- */
+.sidebar .nav-section {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  border: 0.5px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 12px 10px;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.4), var(--shadow-sm);
+}
 .nav-section { margin-bottom: 16px; }
 .nav-title {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   padding: 0 12px 6px;
-  font-weight: 600;
+  font-weight: 700;
 }
 .nav-item {
   display: flex;
@@ -341,17 +370,19 @@ a:hover { color: var(--c-burgundy-deep); }
   gap: 10px;
   padding: 9px 12px;
   border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   cursor: pointer;
   transition: all var(--transition-fast);
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
   margin-bottom: 2px;
 }
-.nav-item:hover { background: rgba(139, 58, 42, 0.08); color: var(--text-primary); }
+.nav-item:hover { background: rgba(139, 58, 42, 0.1); color: var(--c-burgundy); }
 .nav-item.active {
-  background: rgba(139, 58, 42, 0.12);
+  background: linear-gradient(135deg, rgba(139, 58, 42, 0.15), rgba(201, 162, 39, 0.1));
   color: var(--c-burgundy);
+  font-weight: 700;
+  box-shadow: inset 0 0.0px 0 rgba(139, 58, 42, 0.05);
 }
 .nav-item .nav-icon { font-size: 1rem; width: 18px; text-align: center; }
 .nav-item .nav-count {
@@ -880,6 +911,20 @@ a:hover { color: var(--c-burgundy-deep); }
   margin-bottom: 6px;
   letter-spacing: -0.03em;
   color: var(--text-primary);
+  position: relative;
+  display: inline-block;
+  left: 50%;
+  transform: translateX(-50%);
+}
+.auth-title::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 15%;
+  width: 70%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #C9A227, transparent);
+  border-radius: 1px;
 }
 .auth-subtitle {
   text-align: center;

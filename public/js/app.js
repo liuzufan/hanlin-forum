@@ -346,7 +346,7 @@ function renderAuthPage() {
       <div class="glass auth-card">
         <div class="auth-logo">
           <div class="logo-icon"><i class="fas fa-feather"></i></div>
-          <h1 class="auth-title gradient-text">翰林校园论坛</h1>
+          <h1 class="auth-title">翰林校园论坛</h1>
           <p class="auth-subtitle">东莞市翰林实验学校 · 学子交流平台</p>
         </div>
         <div class="auth-tabs">
@@ -554,7 +554,7 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
 
   return `
     <div class="flex items-center justify-between mb-4" style="gap:12px;flex-wrap:wrap">
-      <h1 class="gradient-text" style="font-size:1.4rem">${escapeHtml(pageTitle)}</h1>
+      <h1 class="page-title" style="font-size:1.4rem">${escapeHtml(pageTitle)}</h1>
       <div class="flex gap-2">
         ${sortTabs.map(t => `
           <button class="btn btn-sm ${sort === t.key ? 'btn-primary' : 'btn-ghost'}" onclick="changeSort('${t.key}')">
@@ -975,7 +975,7 @@ async function renderFavorites() {
     posts = data.posts;
   } catch {}
   return `
-    <h1 class="gradient-text mb-4" style="font-size:1.4rem"><i class="fas fa-bookmark"></i> 我的收藏</h1>
+    <h1 class="page-title mb-4" style="font-size:1.4rem"><i class="fas fa-bookmark"></i> 我的收藏</h1>
     ${renderPostList(posts)}
   `;
 }
@@ -1000,7 +1000,7 @@ async function renderSuggestionsPage() {
 
   return `
     <div class="flex items-center justify-between mb-4" style="gap:12px;flex-wrap:wrap">
-      <h1 class="gradient-text" style="font-size:1.4rem"><i class="fas fa-lightbulb"></i> 建议反馈</h1>
+      <h1 class="page-title" style="font-size:1.4rem"><i class="fas fa-lightbulb"></i> 建议反馈</h1>
       ${state.user ? `<button class="btn btn-primary" onclick="navigate('/create-suggestion')"><i class="fas fa-plus"></i> 提建议</button>` : ''}
     </div>
     <div class="glass" style="padding:16px;margin-bottom:16px;font-size:0.85rem;color:var(--text-secondary)">
@@ -1113,7 +1113,7 @@ async function renderNotifications() {
   } catch {}
 
   return `
-    <h1 class="gradient-text mb-4" style="font-size:1.4rem"><i class="fas fa-bell"></i> 通知中心</h1>
+    <h1 class="page-title mb-4" style="font-size:1.4rem"><i class="fas fa-bell"></i> 通知中心</h1>
     ${notifications.length === 0 ? `
       <div class="empty-state glass"><div class="empty-icon"><i class="fas fa-bell-slash"></i></div><h3>暂无通知</h3></div>
     ` : notifications.map(n => `
@@ -1138,7 +1138,7 @@ async function renderNotifications() {
 // ===== Render: Categories Page (mobile) =====
 function renderCategoriesPage() {
   return `
-    <h1 class="gradient-text mb-4" style="font-size:1.4rem"><i class="fas fa-th-large"></i> 论坛版块</h1>
+    <h1 class="page-title mb-4" style="font-size:1.4rem"><i class="fas fa-th-large"></i> 论坛版块</h1>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px">
       ${state.categories.map((cat, i) => `
         <div class="glass post-card" style="text-align:center;cursor:pointer" onclick="navigate('/category/${cat.slug}')">
