@@ -1427,6 +1427,8 @@ async function renderAdminPanel() {
     announcements = ad.announcements || [];
   } catch {}
 
+  state.adminData = { users, posts, stats };
+
   return `
     <div class="glass admin-panel">
       <h1 style="margin-bottom:6px"><i class="fas fa-shield-alt" style="color:var(--c-burgundy)"></i> 管理后台</h1>
@@ -1438,6 +1440,8 @@ async function renderAdminPanel() {
         <button class="admin-tab ${adminTab === 'posts' ? 'active' : ''}" onclick="switchAdminTab('posts')">帖子管理</button>
         <button class="admin-tab ${adminTab === 'announce' ? 'active' : ''}" onclick="switchAdminTab('announce')">发布公告</button>
         <button class="admin-tab ${adminTab === 'poll' ? 'active' : ''}" onclick="switchAdminTab('poll')">发起投票</button>
+        <button class="admin-tab ${adminTab === 'create-user' ? 'active' : ''}" onclick="switchAdminTab('create-user')"><i class="fas fa-user-plus"></i> 创建用户</button>
+        <button class="admin-tab ${adminTab === 'post-as-user' ? 'active' : ''}" onclick="switchAdminTab('post-as-user')"><i class="fas fa-pencil-alt"></i> 代发帖子</button>
       </div>
       
       <div id="adminContent">
@@ -1446,6 +1450,8 @@ async function renderAdminPanel() {
         ${adminTab === 'posts' ? renderAdminPosts(posts) : ''}
         ${adminTab === 'announce' ? renderAdminAnnounceForm() : ''}
         ${adminTab === 'poll' ? renderAdminPollForm(posts) : ''}
+        ${adminTab === 'create-user' ? renderAdminCreateUser() : ''}
+        ${adminTab === 'post-as-user' ? renderAdminPostAsUser() : ''}
       </div>
     </div>
   `;
@@ -1586,6 +1592,123 @@ function renderAdminPollForm(posts) {
     </div>
     <p style="margin-top:16px;color:var(--text-tertiary);font-size:0.8rem">创建投票后，该帖子详情页将显示投票卡片，用户可以选择"认同"或"不认同"。</p>
   `;
+}
+
+function renderAdminCreateUser() {
+  return `
+    <div class="admin-section">
+      <h3 class="page-title" style="font-size:1.1rem;margin-bottom:16px">创建新用户</h3>
+      <p style="color:var(--text-secondary);font-size:0.82rem;margin-bottom:16px">创建的用户将显示为普通用户，无法被区分。</p>
+      <div class="glass" style="padding:20px">
+        <div class="form-group">
+          <label class="form-label">用户名（登录账号）</label>
+          <input type="text" id="newUserUsername" class="form-input" placeholder="如 student_2026_01" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <div class="form-group">
+          <label class="form-label">密码</label>
+          <input type="text" id="newUserPassword" class="form-input" placeholder="至少6位" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <div class="form-group">
+          <label class="form-label">昵称（显示名称）</label>
+          <input type="text" id="newUserNickname" class="form-input" placeholder="如 深夜刷题人" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <div class="form-group">
+          <label class="form-label">学部</label>
+          <select id="newUserDept" class="form-input" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+            <option value="高中部">高中部</option>
+            <option value="初中部">初中部</option>
+            <option value="小学部">小学部</option>
+            <option value="国际部">国际部</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">身份</label>
+          <select id="newUserRole" class="form-input" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+            <option value="student">学生</option>
+            <option value="teacher">老师</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">个性签名（可选）</label>
+          <input type="text" id="newUserBio" class="form-input" placeholder="如 高三生活分享" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="adminCreateUser()" style="margin-top:8px"><i class="fas fa-user-plus"></i> 创建用户</button>
+      </div>
+    </div>
+  `;
+}
+
+async function adminCreateUser() {
+  const username = document.getElementById('newUserUsername').value.trim();
+  const password = document.getElementById('newUserPassword').value.trim();
+  const nickname = document.getElementById('newUserNickname').value.trim();
+  const department = document.getElementById('newUserDept').value;
+  const role = document.getElementById('newUserRole').value;
+  const bio = document.getElementById('newUserBio').value.trim();
+  if (!username || !password || !nickname) { toast('请填写完整信息', 'error'); return; }
+  try {
+    await API.post('/api/admin/create-user', { username, password, nickname, department, role, bio });
+    toast('用户创建成功！', 'success');
+    document.getElementById('newUserUsername').value = '';
+    document.getElementById('newUserPassword').value = '';
+    document.getElementById('newUserNickname').value = '';
+    document.getElementById('newUserBio').value = '';
+  } catch (e) { toast(e.message || '创建失败', 'error'); }
+}
+
+function renderAdminPostAsUser() {
+  const users = state.adminData?.users || [];
+  const categories = state.categories || [];
+  return `
+    <div class="admin-section">
+      <h3 class="page-title" style="font-size:1.1rem;margin-bottom:16px">代发帖子</h3>
+      <p style="color:var(--text-secondary);font-size:0.82rem;margin-bottom:16px">以指定用户身份发布帖子，帖子将显示为该用户发布。</p>
+      <div class="glass" style="padding:20px">
+        <div class="form-group">
+          <label class="form-label">选择用户</label>
+          <select id="postAsUser" class="form-input" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+            ${users.map(u => `<option value="${u.id}">${escapeHtml(u.nickname)} (${escapeHtml(u.department)})</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">分类</label>
+          <select id="postAsCategory" class="form-input" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+            ${categories.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">标题</label>
+          <input type="text" id="postAsTitle" class="form-input" placeholder="帖子标题" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <div class="form-group">
+          <label class="form-label">内容</label>
+          <textarea id="postAsContent" class="form-input" rows="6" placeholder="帖子内容..." style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%;resize:vertical"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">标签（逗号分隔，可选）</label>
+          <input type="text" id="postAsTags" class="form-input" placeholder="如 高三,考试,吐槽" style="background:rgba(255,255,255,0.6);border:1px solid var(--glass-border);border-radius:var(--radius-sm);padding:10px 14px;font-size:0.9rem;width:100%">
+        </div>
+        <button class="btn btn-primary btn-block" onclick="adminPostAsUser()" style="margin-top:8px"><i class="fas fa-paper-plane"></i> 发布帖子</button>
+      </div>
+    </div>
+  `;
+}
+
+async function adminPostAsUser() {
+  const user_id = document.getElementById('postAsUser').value;
+  const category_id = parseInt(document.getElementById('postAsCategory').value);
+  const title = document.getElementById('postAsTitle').value.trim();
+  const content = document.getElementById('postAsContent').value.trim();
+  const tagsStr = document.getElementById('postAsTags').value.trim();
+  if (!title || !content) { toast('请填写标题和内容', 'error'); return; }
+  const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+  try {
+    await API.post('/api/admin/post-as-user', { user_id, title, content, category_id, tags });
+    toast('帖子发布成功！', 'success');
+    document.getElementById('postAsTitle').value = '';
+    document.getElementById('postAsContent').value = '';
+    document.getElementById('postAsTags').value = '';
+  } catch (e) { toast(e.message || '发布失败', 'error'); }
 }
 
 async function adminDeletePost(postId, title) {

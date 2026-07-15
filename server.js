@@ -16,6 +16,18 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// --- Login Rate Limiting ---
+const loginAttempts = new Map();
+function checkLoginRate(ip) {
+  const now = Date.now();
+  const attempts = loginAttempts.get(ip) || [];
+  const recent = attempts.filter(t => now - t < 900000); // 15分钟内
+  if (recent.length >= 10) return false;
+  recent.push(now);
+  loginAttempts.set(ip, recent);
+  return true;
+}
+
 // --- Auth Middleware ---
 function auth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
@@ -37,7 +49,7 @@ function optionalAuth(req, res, next) {
 }
 
 function adminAuth(req, res, next) {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: '需要管理员权限' });
+  if (req.user.role !== 'admin') return res.status(404).json({ error: 'Not Found' });
   next();
 }
 
@@ -66,7 +78,7 @@ function formatPost(post, currentUserId) {
     ...post,
     tags: typeof post.tags === 'string' ? JSON.parse(post.tags || '[]') : (post.tags || []),
     images: typeof post.images === 'string' ? JSON.parse(post.images || '[]') : (post.images || []),
-    author: author ? { id: author.id, nickname: author.nickname, avatar_color: author.avatar_color, department: author.department, role: author.role } : null,
+    author: author ? { id: author.id, nickname: author.nickname, avatar_color: author.avatar_color, department: author.department, role: author.role === 'admin' ? 'student' : author.role } : null,
     category: category ? { id: category.id, name: category.name, slug: category.slug, color: category.color } : null,
     liked, voted, favorited,
     poll: pollData, poll_voted: pollVoted,
@@ -83,15 +95,16 @@ function formatComment(comment, currentUserId) {
   const replies = findAll('comments', { parent_id: comment.id })
     .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
     .map(r => formatComment(r, currentUserId));
-  return { ...comment, author: author ? { id: author.id, nickname: author.nickname, avatar_color: author.avatar_color, department: author.department, role: author.role } : null, liked, replies };
+  return { ...comment, author: author ? { id: author.id, nickname: author.nickname, avatar_color: author.avatar_color, department: author.department, role: author.role === 'admin' ? 'student' : author.role } : null, liked, replies };
 }
 
-function publicUser(user) {
+function publicUser(user, viewerRole) {
   if (!user) return null;
+  const showRole = (viewerRole === 'admin' || user.role !== 'admin') ? user.role : 'student';
   return {
     id: user.id, username: user.username, nickname: user.nickname,
     avatar_color: user.avatar_color, bio: user.bio, department: user.department,
-    role: user.role, post_count: user.post_count || 0, comment_count: user.comment_count || 0,
+    role: showRole, post_count: user.post_count || 0, comment_count: user.comment_count || 0,
     like_received: user.like_received || 0, created_at: user.created_at,
   };
 }
@@ -101,13 +114,14 @@ function publicUser(user) {
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: '请输入账号和密码' });
+  if (!checkLoginRate(req.ip)) return res.status(429).json({ error: '尝试过于频繁，请15分钟后再试' });
   const user = findOne('users', { username });
   if (!user) return res.status(401).json({ error: '账号不存在' });
   if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: '密码错误' });
   const banned = findOne('banned_users', { user_id: user.id });
   if (banned) return res.status(403).json({ error: '该账号已被禁言' });
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: publicUser(user) });
+  res.json({ token, user: publicUser(user, user.role) });
 });
 
 app.post('/api/auth/register', (req, res) => {
@@ -127,13 +141,13 @@ app.post('/api/auth/register', (req, res) => {
     post_count: 0, comment_count: 0, like_received: 0, role: role === 'teacher' ? 'teacher' : 'student',
   });
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: publicUser(user) });
+  res.json({ token, user: publicUser(user, user.role) });
 });
 
 app.get('/api/auth/me', auth, (req, res) => {
   const user = findById('users', req.user.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  res.json({ user: publicUser(user) });
+  res.json({ user: publicUser(user, req.user.role) });
 });
 
 // ===== CATEGORY ROUTES =====
@@ -344,13 +358,13 @@ app.get('/api/users/:id', optionalAuth, (req, res) => {
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .slice(0, 10)
     .map(p => formatPost(p, req.user?.id));
-  res.json({ user: publicUser(user), posts });
+  res.json({ user: publicUser(user, req.user?.role), posts });
 });
 
 app.put('/api/users/profile', auth, (req, res) => {
   const { nickname, bio, department } = req.body;
   update('users', req.user.id, { nickname, bio, department });
-  res.json({ user: publicUser(findById('users', req.user.id)) });
+  res.json({ user: publicUser(findById('users', req.user.id), req.user.role) });
 });
 
 app.get('/api/users/me/favorites', auth, (req, res) => {
@@ -573,6 +587,43 @@ app.post('/api/admin/poll', auth, adminAuth, (req, res) => {
     disagree: 0,
   });
   res.json({ poll });
+});
+
+// 管理员创建用户
+app.post('/api/admin/create-user', auth, adminAuth, (req, res) => {
+  const { username, password, nickname, department, role, bio } = req.body;
+  if (!username || !password || !nickname) return res.status(400).json({ error: '请填写完整信息' });
+  if (username.length < 3) return res.status(400).json({ error: '账号至少3个字符' });
+  if (password.length < 6) return res.status(400).json({ error: '密码至少6个字符' });
+  const existing = findOne('users', { username });
+  if (existing) return res.status(409).json({ error: '账号已存在' });
+  const colors = ['#8B2323', '#C9A227', '#6B1A1A', '#D4AF37', '#A52A2A', '#B8860B', '#CD853F', '#DA8A2C', '#8B4513', '#BDB76B', '#9B2226', '#BB9457', '#6D1A1A', '#CFA636', '#7A1F1F', '#DAA520', '#A0522D', '#BC8F8F', '#8B6914', '#D2691E'];
+  const avatar_color = colors[Math.floor(Math.random() * colors.length)];
+  const hashed = bcrypt.hashSync(password, 8);
+  const userRole = role === 'teacher' ? 'teacher' : 'student';
+  const user = insert('users', {
+    username, password: hashed, nickname, avatar_color,
+    bio: bio || '欢迎来到翰林校园论坛', department: department || '高中部',
+    created_at: new Date(Date.now() - Math.random() * 86400000 * 30).toISOString(),
+    post_count: 0, comment_count: 0, like_received: 0, role: userRole,
+  });
+  res.json({ success: true, user: { id: user.id, username: user.username, nickname: user.nickname, department: user.department, role: user.role } });
+});
+
+// 管理员代发帖子
+app.post('/api/admin/post-as-user', auth, adminAuth, (req, res) => {
+  const { user_id, title, content, category_id, tags, images } = req.body;
+  if (!user_id || !title || !content || !category_id) return res.status(400).json({ error: '参数不完整' });
+  const targetUser = findById('users', parseInt(user_id));
+  if (!targetUser) return res.status(404).json({ error: '用户不存在' });
+  const post = insert('posts', {
+    user_id: parseInt(user_id), category_id, title, content,
+    tags: JSON.stringify(tags || []), images: JSON.stringify(images || []),
+    created_at: new Date(Date.now() - Math.random() * 3600000 * 24).toISOString(),
+    views: Math.floor(Math.random() * 50) + 10, likes: 0, upvotes: 0, downvotes: 0, comment_count: 0, is_pinned: 0,
+  });
+  increment('users', parseInt(user_id), 'post_count', 1);
+  res.json({ success: true, post: formatPost(post, req.user.id) });
 });
 
 // ===== STATS =====

@@ -88,7 +88,7 @@ const AVATAR_COLORS = [
 ];
 
 const SEED_USERS = [
-  { username: 'admin', nickname: '论坛管理员', department: '管理团队', role: 'admin' },
+  { username: '15118312809', nickname: '论坛管理员', department: '管理团队', role: 'admin' },
   // 高中部学生 (匿名昵称)
   { username: 'night_owl_2026', nickname: '深夜刷题人', department: '高中部', role: 'student' },
   { username: 'canteen_critic', nickname: '食堂测评员', department: '高中部', role: 'student' },
@@ -399,6 +399,7 @@ const SAMPLE_ANNOUNCEMENTS = [
 
 function seedData() {
   const hashedPassword = bcrypt.hashSync('123456', 8);
+  const adminPassword = bcrypt.hashSync('Qq65318320', 8);
   const now = Date.now();
 
   SEED_USERS.forEach((user, idx) => {
@@ -418,7 +419,7 @@ function seedData() {
     db.users.push({
       id: getNextId('users'),
       username: user.username,
-      password: hashedPassword,
+      password: user.role === 'admin' ? adminPassword : hashedPassword,
       nickname: user.nickname,
       avatar_color: color,
       bio: bios[idx % bios.length],
