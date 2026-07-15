@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const {
   loadDB, getDB, findById, findOne, findAll,
-  insert, update, remove, increment, scheduleSave,
+  insert, update, remove, increment, scheduleSave, ensureDB,
 } = require('./database');
 
 const app = express();
@@ -647,8 +647,10 @@ app.get('*', (req, res) => {
 });
 
 // Start
-loadDB();
-app.listen(PORT, () => {
-  console.log(`\n  翰林校园论坛已启动`);
-  console.log(`  访问地址: http://localhost:${PORT}\n`);
-});
+(async () => {
+  await ensureDB();
+  app.listen(PORT, () => {
+    console.log(`\n  翰林校园论坛已启动`);
+    console.log(`  访问地址: http://localhost:${PORT}\n`);
+  });
+})();

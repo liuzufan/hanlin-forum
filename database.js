@@ -1,14 +1,32 @@
 /**
- * 翰林校园论坛 - JSON 文件存储数据库
- * 纯 JavaScript 实现，无需原生编译
+ * 翰林校园论坛 - 数据库模块
+ * 支持本地 JSON 文件存储 + Supabase Storage 云端存储
+ * 有 SUPABASE_URL 环境变量时自动启用云端模式
  */
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 
 const DB_PATH = path.join(__dirname, 'data', 'forum_db.json');
 
+// Supabase 配置
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
+const BUCKET_NAME = 'forum-data';
+const FILE_NAME = 'forum_db.json';
+
+let supabase = null;
+if (USE_SUPABASE) {
+  const { createClient } = require('@supabase/supabase-js');
+  supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+  console.log('[DB] Supabase 云端存储模式已启用');
+}
+
 let db = null;
+let dbReady = false;
+let initPromise = null;
 
 function getDefaultData() {
   return {
@@ -31,41 +49,127 @@ function getDefaultData() {
   };
 }
 
-function loadDB() {
-  if (db) return db;
+// 云端模式：初始化存储桶
+async function initSupabaseStorage() {
+  if (!USE_SUPABASE) return;
+  try {
+    // 检查存储桶是否存在，不存在则创建
+    const { data: buckets } = await supabase.storage.listBuckets();
+    if (!buckets.find(b => b.name === BUCKET_NAME)) {
+      await supabase.storage.createBucket(BUCKET_NAME, { public: false });
+      console.log('[DB] 创建 Supabase 存储桶:', BUCKET_NAME);
+    }
+  } catch (e) {
+    console.error('[DB] 存储桶初始化警告:', e.message);
+  }
+}
+
+// 云端模式：从 Supabase Storage 下载数据库
+async function loadFromSupabase() {
+  const { data, error } = await supabase.storage.from(BUCKET_NAME).download(FILE_NAME);
+  if (error) {
+    if (error.message.includes('not') || error.statusCode === 404) return null;
+    throw error;
+  }
+  const text = await data.text();
+  return JSON.parse(text);
+}
+
+// 云端模式：上传数据库到 Supabase Storage
+async function saveToSupabase() {
+  if (!db) return;
+  const json = JSON.stringify(db, null, 2);
+  const { error } = await supabase.storage.from(BUCKET_NAME).upload(FILE_NAME, json, { upsert: true, contentType: 'application/json' });
+  if (error) console.error('[DB] Supabase 保存失败:', error.message);
+}
+
+// 本地模式：从文件加载
+function loadFromLocal() {
   if (fs.existsSync(DB_PATH)) {
     try {
       const raw = fs.readFileSync(DB_PATH, 'utf-8');
       db = JSON.parse(raw);
-      // 迁移：补充旧数据文件中缺失的新表
       const defaults = getDefaultData();
-      Object.keys(defaults).forEach(key => {
-        if (db[key] === undefined) db[key] = defaults[key];
-      });
-      Object.keys(defaults.nextId).forEach(key => {
-        if (db.nextId[key] === undefined) db.nextId[key] = defaults.nextId[key];
-      });
+      Object.keys(defaults).forEach(key => { if (db[key] === undefined) db[key] = defaults[key]; });
+      Object.keys(defaults.nextId).forEach(key => { if (db.nextId[key] === undefined) db.nextId[key] = defaults.nextId[key]; });
     } catch (e) {
-      console.error('[DB] Failed to parse DB file, creating new one:', e.message);
+      console.error('[DB] 本地文件解析失败，创建新数据库:', e.message);
       db = getDefaultData();
+      seedData();
+      saveDBLocal();
     }
   } else {
     db = getDefaultData();
     seedData();
-    saveDB();
+    saveDBLocal();
   }
-  return db;
 }
 
-function saveDB() {
+// 本地模式：保存到文件
+function saveDBLocal() {
   if (!db) return;
   try {
     const dir = path.dirname(DB_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf-8');
   } catch (e) {
-    console.error('[DB] Failed to save:', e.message);
+    console.error('[DB] 本地保存失败:', e.message);
   }
+}
+
+// 异步初始化（云端模式）
+function initDB() {
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    if (USE_SUPABASE) {
+      await initSupabaseStorage();
+      try {
+        const cloudData = await loadFromSupabase();
+        if (cloudData) {
+          db = cloudData;
+          const defaults = getDefaultData();
+          Object.keys(defaults).forEach(key => { if (db[key] === undefined) db[key] = defaults[key]; });
+          Object.keys(defaults.nextId).forEach(key => { if (db.nextId[key] === undefined) db.nextId[key] = defaults.nextId[key]; });
+          console.log('[DB] 从 Supabase 加载数据成功');
+        } else {
+          db = getDefaultData();
+          seedData();
+          await saveToSupabase();
+          console.log('[DB] 初始化种子数据并上传到 Supabase');
+        }
+      } catch (e) {
+        console.error('[DB] Supabase 加载失败，回退到本地:', e.message);
+        loadFromLocal();
+      }
+    } else {
+      loadFromLocal();
+    }
+    dbReady = true;
+  })();
+  return initPromise;
+}
+
+function loadDB() {
+  if (db) return db;
+  initDB();
+  // 同步模式（本地）下 db 已就绪；云端模式下首次返回临时数据
+  if (!db) db = getDefaultData();
+  return db;
+}
+
+async function ensureDB() {
+  if (dbReady) return db;
+  await initDB();
+  return db;
+}
+
+function saveDB() {
+  if (!db) return;
+  if (USE_SUPABASE) {
+    saveToSupabase().catch(e => console.error('[DB] 异步保存失败:', e.message));
+  }
+  // 同时保存本地缓存（用于快速恢复）
+  saveDBLocal();
 }
 
 let saveTimer = null;
@@ -585,7 +689,7 @@ function increment(table, id, field, amount = 1) {
 }
 
 module.exports = {
-  loadDB, saveDB, getDB,
+  loadDB, saveDB, getDB, ensureDB, initDB,
   findById, findOne, findAll,
   insert, update, remove, increment,
   scheduleSave,
