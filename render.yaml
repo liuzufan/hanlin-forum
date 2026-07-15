@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: hanlin-forum
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/stats
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
