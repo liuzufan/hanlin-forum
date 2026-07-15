@@ -1,9 +1,9 @@
 // 翰林校园论坛 Service Worker
-const CACHE_NAME = 'hanlin-forum-v7';
+const CACHE_NAME = 'hanlin-forum-v8';
 const STATIC_ASSETS = [
   '/',
-  '/css/style.css?v=7',
-  '/js/app.js?v=7',
+  '/css/style.css?v=8',
+  '/js/app.js?v=8',
   '/manifest.json'
 ];
 
