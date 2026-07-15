@@ -908,20 +908,20 @@ a:hover { color: var(--c-burgundy-deep); }
   font-size: 1.5rem;
   font-weight: 900;
   font-family: 'Noto Serif SC', serif;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   letter-spacing: -0.03em;
   color: var(--text-primary);
   position: relative;
-  display: inline-block;
-  left: 50%;
-  transform: translateX(-50%);
+  display: block;
+  width: 100%;
 }
 .auth-title::after {
   content: '';
   position: absolute;
   bottom: -4px;
-  left: 15%;
-  width: 70%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60%;
   height: 2px;
   background: linear-gradient(90deg, transparent, #C9A227, transparent);
   border-radius: 1px;
