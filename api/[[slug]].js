@@ -42,10 +42,17 @@ function checkLoginRate(ip) {
 }
 
 // --- 认证 ---
+// 支持 X-Auth-Token 头、Authorization 头、URL query 参数（兼容 IGA Pages 预览环境）
 function getAuthUser(request) {
-  const auth = request.headers.get('authorization');
-  if (!auth) return null;
-  const token = auth.replace('Bearer ', '');
+  let token = request.headers.get('x-auth-token');
+  if (!token) {
+    const auth = request.headers.get('authorization');
+    if (auth) token = auth.replace('Bearer ', '');
+  }
+  if (!token) {
+    try { token = new URL(request.url).searchParams.get('token'); } catch {}
+  }
+  if (!token) return null;
   try { return jwt.verify(token, JWT_SECRET); } catch { return null; }
 }
 
