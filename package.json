@@ -1,20 +1,8 @@
 {
-  "name": "hanlin-campus-forum",
+  "name": "hanlin-forum",
   "version": "1.0.0",
-  "description": "东莞市翰林实验学校校园论坛",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.110.6",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^9.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^17.4.2",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1"
+    "jsonwebtoken": "^9.0.2"
   }
 }
