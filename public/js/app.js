@@ -23,18 +23,13 @@ const state = {
 };
 
 // ===== API Client =====
-// 动态 API Base URL：非同源部署时指向 Render 后端
-const API_BASE = (() => {
-  const host = window.location.hostname;
-  if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('onrender.com')) return '';
-  // IGA Pages 或其他静态部署 → 指向 Render 后端
-  return window.__API_BASE__ || '';
-})();
+// 前后端同源部署（IGA Pages），API_BASE 始终为空字符串
+const API_BASE = '';
 
 const API = {
   async request(url, options = {}) {
     const headers = { 'Content-Type': 'application/json', ...options.headers };
-    if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
+    if (state.token) headers['X-Auth-Token'] = state.token;
     try {
       const res = await fetch(API_BASE + url, { ...options, headers });
       const data = await res.json();
