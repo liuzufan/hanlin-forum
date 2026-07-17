@@ -1026,11 +1026,7 @@ export async function onRequest(context) {
   const { request, env, waitUntil } = context;
   setEnv(env);
   const response = await handleRequest(request);
-  // 确保数据写入 KV 完成后才释放 isolate
-  if (waitUntil) {
-    waitUntil(saveDB());
-  } else {
-    await saveDB();
-  }
+  // 写操作必须同步保存，确保数据落盘后才返回响应
+  await saveDB();
   return response;
 }

@@ -1857,6 +1857,13 @@ async function adminDeleteUser(userId, nickname) {
 }
 
 function renderAdminAnnounceForm() {
+  // 异步加载公告列表
+  if (!announcements_global || announcements_global.length === 0) {
+    API.get('/api/announcements').then(function(ad) {
+      announcements_global = ad.announcements || [];
+      if (announcements_global.length > 0) render();
+    }).catch(function() {});
+  }
   return `
     <div style="max-width:500px">
       <div class="form-group">
@@ -2205,6 +2212,7 @@ async function adminDeleteAnnouncement(annId) {
   try {
     await API.request('/api/admin/announcements/' + annId, { method: 'DELETE' });
     toast('公告已删除', 'success');
+    announcements_global = []; // 清除缓存以重新加载
     render();
   } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
