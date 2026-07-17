@@ -802,7 +802,15 @@ async function renderPostDetail(postId) {
         <div class="comment-input-area">
           ${getAvatarHtml(state.user.nickname, state.user.avatar_color, 'sm')}
           <textarea id="commentInput" placeholder="写下你的评论..." rows="2"></textarea>
+          <label style="cursor:pointer;padding:6px;color:var(--text-secondary)" title="添加图片">
+            <i class="far fa-image"></i>
+            <input type="file" accept="image/*" style="display:none" onchange="handleCommentImage(this, 'comment')">
+          </label>
           <button class="btn btn-primary btn-sm" onclick="submitComment(${post.id})">发送</button>
+        </div>
+        <div id="commentImagePreview" style="display:none;margin-top:8px">
+          <img id="commentImagePreviewImg" style="max-width:120px;max-height:120px;border-radius:8px">
+          <button class="btn btn-ghost btn-sm" onclick="removeCommentImage('comment')"><i class="fas fa-times"></i></button>
         </div>
       ` : state.isGuest ? `
         <div class="guest-comment-hint">
@@ -839,7 +847,7 @@ function renderCommentItem(comment) {
           <span style="font-size:0.7rem;color:var(--text-tertiary);background:var(--bg-surface);padding:1px 6px;border-radius:4px">${escapeHtml(author.department || '')}</span>
           <span class="comment-time">${formatTime(comment.created_at)}</span>
         </div>
-        <div class="comment-content">${escapeHtml(comment.content)}</div>
+        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? `<img src="${escapeHtml(comment.image)}" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openImagePreview('${escapeHtml(comment.image)}')" onerror="this.style.display='none'">` : ''}</div>
         <div class="comment-actions">
           <button class="comment-action ${comment.liked ? 'active' : ''}" onclick="likeComment(${comment.id})">
             <i class="${comment.liked ? 'fas' : 'far'} fa-heart"></i> ${comment.likes}
@@ -858,7 +866,15 @@ function renderCommentItem(comment) {
         <div id="replyArea-${comment.id}" style="display:none;margin-top:8px">
           <div class="comment-input-area" style="padding:8px 0">
             <textarea id="replyInput-${comment.id}" placeholder="回复 ${escapeHtml(author.nickname)}..." rows="2" style="min-height:36px;font-size:0.85rem"></textarea>
+            <label style="cursor:pointer;padding:4px;color:var(--text-secondary)" title="添加图片">
+              <i class="far fa-image"></i>
+              <input type="file" accept="image/*" style="display:none" onchange="handleCommentImage(this, 'reply-${comment.id}')">
+            </label>
             <button class="btn btn-primary btn-sm" onclick="submitReply(${comment.id})">回复</button>
+          </div>
+          <div id="replyImagePreview-${comment.id}" style="display:none;margin-top:4px">
+            <img id="replyImagePreviewImg-${comment.id}" style="max-width:80px;max-height:80px;border-radius:6px">
+            <button class="btn btn-ghost btn-sm" onclick="removeCommentImage('reply-${comment.id}')"><i class="fas fa-times"></i></button>
           </div>
         </div>
         ${comment.replies && comment.replies.length > 0 ? `
@@ -1498,15 +1514,61 @@ async function favoritePost(postId) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+var commentImages = {};
+
+function handleCommentImage(input, key) {
+  var file = input.files[0];
+  if (!file) return;
+  if (file.size > 3 * 1024 * 1024) { toast('图片不能超过3MB', 'error'); input.value = ''; return; }
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    commentImages[key] = e.target.result;
+    var previewEl, imgEl;
+    if (key === 'comment') {
+      previewEl = document.getElementById('commentImagePreview');
+      imgEl = document.getElementById('commentImagePreviewImg');
+    } else {
+      previewEl = document.getElementById('replyImagePreview-' + key.replace('reply-', ''));
+      imgEl = document.getElementById('replyImagePreviewImg-' + key.replace('reply-', ''));
+    }
+    if (previewEl && imgEl) {
+      imgEl.src = e.target.result;
+      previewEl.style.display = 'block';
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeCommentImage(key) {
+  delete commentImages[key];
+  var previewEl;
+  if (key === 'comment') {
+    previewEl = document.getElementById('commentImagePreview');
+  } else {
+    previewEl = document.getElementById('replyImagePreview-' + key.replace('reply-', ''));
+  }
+  if (previewEl) previewEl.style.display = 'none';
+}
+
+function openImagePreview(url) {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out';
+  overlay.innerHTML = '<img src="' + url + '" style="max-width:90%;max-height:90%;border-radius:8px">';
+  overlay.onclick = function() { document.body.removeChild(overlay); };
+  document.body.appendChild(overlay);
+}
+
 async function submitComment(postId) {
   if (!requireAuth('评论')) return;
   const input = $('#commentInput');
   const content = input.value.trim();
-  if (!content) return;
+  const image = commentImages['comment'] || '';
+  if (!content && !image) return;
   try {
-    const data = await API.post(`/api/posts/${postId}/comments`, { content });
+    const data = await API.post(`/api/posts/${postId}/comments`, { content, image });
     state.comments.push(data.comment);
     input.value = '';
+    delete commentImages['comment'];
     render();
     toast('评论成功', 'success');
   } catch (e) { toast(e.message, 'error'); }
@@ -1521,16 +1583,18 @@ function toggleReply(commentId) {
 async function submitReply(commentId) {
   const input = $(`#replyInput-${commentId}`);
   const content = input.value.trim();
-  if (!content) return;
+  const image = commentImages['reply-' + commentId] || '';
+  if (!content && !image) return;
   const postId = state.currentPost.id;
   try {
-    const data = await API.post(`/api/posts/${postId}/comments`, { content, parent_id: commentId });
+    const data = await API.post(`/api/posts/${postId}/comments`, { content, image, parent_id: commentId });
     // Find parent comment and add reply
     const parent = state.comments.find(c => c.id === commentId);
     if (parent) {
       if (!parent.replies) parent.replies = [];
       parent.replies.push(data.comment);
     }
+    delete commentImages['reply-' + commentId];
     render();
     toast('回复成功', 'success');
   } catch (e) { toast(e.message, 'error'); }
@@ -1688,15 +1752,33 @@ async function translatePost(postId) {
   btn.disabled = true;
 
   try {
-    // 使用 Google Translate 免费 API
-    var apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=' + encodeURIComponent(text);
-    var res = await fetch(apiUrl);
+    // 使用 MyMemory 翻译 API（POST方式，无URL长度限制）
+    var formData = new FormData();
+    formData.append('q', text);
+    formData.append('langpair', 'en|zh-CN');
+    var res = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text.substring(0, 480)) + '&langpair=en|zh-CN');
     var data = await res.json();
     var translated = '';
-    if (data && data[0]) {
-      for (var i = 0; i < data[0].length; i++) {
-        if (data[0][i] && data[0][i][0]) translated += data[0][i][0];
+    if (data && data.responseData && data.responseData.translatedText) {
+      translated = data.responseData.translatedText;
+    }
+    // 如果文本太长，分段翻译
+    if (!translated && text.length > 480) {
+      var chunks = [];
+      var temp = text;
+      while (temp.length > 0) {
+        chunks.push(temp.substring(0, 480));
+        temp = temp.substring(480);
       }
+      var results = [];
+      for (var i = 0; i < chunks.length; i++) {
+        var cRes = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(chunks[i]) + '&langpair=en|zh-CN');
+        var cData = await cRes.json();
+        if (cData && cData.responseData && cData.responseData.translatedText) {
+          results.push(cData.responseData.translatedText);
+        }
+      }
+      translated = results.join('');
     }
     if (translated) {
       translatedPosts[postId] = { original: text, translated: translated };
@@ -1708,25 +1790,8 @@ async function translatePost(postId) {
       btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
     }
   } catch (e) {
-    // 降级到 MyMemory 翻译 API
-    try {
-      var apiUrl2 = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) + '&langpair=en|zh-CN';
-      var res2 = await fetch(apiUrl2);
-      var data2 = await res2.json();
-      if (data2 && data2.responseData && data2.responseData.translatedText) {
-        var translated2 = data2.responseData.translatedText;
-        translatedPosts[postId] = { original: text, translated: translated2 };
-        contentEl.innerHTML = escapeHtml(translated2) + '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);font-size:0.78rem;color:var(--text-tertiary)"><i class="fas fa-info-circle"></i> 以上为机器翻译，<a style="color:var(--c-teal);cursor:pointer" onclick="translatePost(' + postId + ')">查看原文</a></div>';
-        btn.innerHTML = '<i class="fas fa-undo"></i> 原文';
-        toast('翻译完成', 'success');
-      } else {
-        toast('翻译服务暂时不可用', 'error');
-        btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
-      }
-    } catch (e2) {
-      toast('翻译失败: ' + e.message, 'error');
-      btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
-    }
+    toast('翻译服务暂时不可用: ' + e.message, 'error');
+    btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
   }
   btn.disabled = false;
 }

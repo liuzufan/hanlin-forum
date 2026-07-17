@@ -301,12 +301,12 @@ async function handleRequest(request) {
       if (m = path.match(/^\/api\/posts\/(\d+)\/comments$/)) {
         const { user, error } = requireAuth(request);
         if (error) return error;
-        const { content, parent_id } = await getBody(request);
-        if (!content) return json({ error: '请输入评论内容' }, 400);
+        const { content, parent_id, image } = await getBody(request);
+        if (!content && !image) return json({ error: '请输入评论内容' }, 400);
         const postId = parseInt(m[1]);
         const comment = insert('comments', {
           post_id: postId, user_id: user.id, parent_id: parent_id || null,
-          content, created_at: new Date().toISOString(), likes: 0,
+          content: content || '', image: image || '', created_at: new Date().toISOString(), likes: 0,
         });
         increment('posts', postId, 'comment_count', 1);
         increment('users', user.id, 'comment_count', 1);
