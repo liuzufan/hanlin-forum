@@ -753,6 +753,53 @@ async function handleRequest(request) {
         return json({ elections, today_votes: todayVoteCount, votes_remaining: Math.max(0, 3 - todayVoteCount), voted_candidate_ids: votedCandidateIds });
       }
 
+      // GET /api/translate?q=...&to=zh-CN
+      if (path.startsWith('/api/translate')) {
+        const url = new URL(request.url);
+        const q = url.searchParams.get('q') || '';
+        const to = url.searchParams.get('to') || 'zh-CN';
+        if (!q) return json({ error: '缺少文本' }, 400);
+
+        // 分段翻译（每段<1800字符，避免URL过长）
+        const chunkSize = 1800;
+        const chunks = [];
+        let temp = q;
+        while (temp.length > 0) {
+          if (temp.length <= chunkSize) { chunks.push(temp); break; }
+          let cut = temp.lastIndexOf('.', chunkSize);
+          if (cut < 200) cut = temp.lastIndexOf('\n', chunkSize);
+          if (cut < 200) cut = temp.lastIndexOf(' ', chunkSize);
+          if (cut < 200) cut = chunkSize;
+          chunks.push(temp.substring(0, cut + 1));
+          temp = temp.substring(cut + 1);
+        }
+
+        const results = [];
+        for (const chunk of chunks) {
+          let translated = '';
+          // 最多重试3次
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + encodeURIComponent(to) + '&dt=t&q=' + encodeURIComponent(chunk);
+              const resp = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0' } });
+              if (!resp.ok) { await new Promise(r => setTimeout(r, 500)); continue; }
+              const data = await resp.json();
+              if (data && data[0]) {
+                for (let i = 0; i < data[0].length; i++) {
+                  if (data[0][i] && data[0][i][0]) translated += data[0][i][0];
+                }
+              }
+              if (translated) break;
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          }
+          results.push(translated || chunk);
+        }
+        const finalTranslation = results.join('');
+        if (finalTranslation) return json({ translated: finalTranslation, source: 'google' });
+        return json({ error: '翻译服务暂时不可用，请稍后重试' }, 503);
+      }
+
       // GET /api/stats
       if (path === '/api/stats') {
         const db = getDB();
