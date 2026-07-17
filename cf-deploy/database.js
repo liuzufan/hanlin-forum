@@ -6,7 +6,10 @@
 const bcrypt = require('bcryptjs');
 
 let _env = {};
-function setEnv(env) { _env = env; }
+let db = null;
+let _dirty = false;
+
+function setEnv(env) { _env = env; db = null; _dirty = false; }
 
 function useKV() { return !!_env.FORUM_DB; }
 function getSupabaseUrl() { return _env.SUPABASE_URL || (typeof process !== 'undefined' && process.env?.SUPABASE_URL) || ''; }
@@ -15,11 +18,7 @@ function useSupabase() { return !!(getSupabaseUrl() && getSupabaseKey()); }
 
 const BUCKET_NAME = 'forum-data';
 const FILE_NAME = 'forum_db.json';
-const KV_KEY = 'forum_db_v3';
-
-let db = null;
-let dbReady = false;
-let initPromise = null;
+const KV_KEY = 'forum_db_v4';
 
 function getDefaultData() {
   return {
@@ -77,69 +76,81 @@ async function saveToKV() {
   await _env.FORUM_DB.put(KV_KEY, JSON.stringify(db));
 }
 
-// === Init ===
-function initDB() {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
-    // 优先使用 Cloudflare KV
-    if (useKV()) {
-      try {
-        const cloud = await loadFromKV();
-        if (cloud) {
-          db = cloud;
-          const defaults = getDefaultData();
-          Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
-          Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
-        } else {
-          db = getDefaultData();
-          seedData();
-          await saveToKV();
-        }
-        dbReady = true;
-        return;
-      } catch (e) {
-        console.error('[DB] KV load failed, trying Supabase:', e.message);
-      }
-    }
-    // 回退到 Supabase
-    if (useSupabase()) {
-      await initSupabaseStorage();
-      try {
-        const cloud = await loadFromSupabase();
-        if (cloud) {
-          db = cloud;
-          const defaults = getDefaultData();
-          Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
-          Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
-        } else {
-          db = getDefaultData();
-          seedData();
-          await saveToSupabase();
-        }
-      } catch (e) {
-        console.error('[DB] Supabase load failed, using memory:', e.message);
+// === Init / Load / Save ===
+// 每次请求都从 KV 读取最新数据，确保数据一致性
+async function loadDB() {
+  if (db) return db;
+  
+  if (useKV()) {
+    try {
+      const cloud = await loadFromKV();
+      if (cloud) {
+        db = cloud;
+        const defaults = getDefaultData();
+        Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
+        Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
+      } else {
         db = getDefaultData();
         seedData();
+        _dirty = true;
+        await saveToKV();
+        _dirty = false;
       }
-    } else {
-      db = getDefaultData();
-      seedData();
+      return db;
+    } catch (e) {
+      console.error('[DB] KV load failed:', e.message);
     }
-    dbReady = true;
-  })();
-  return initPromise;
+  }
+  
+  // 回退到 Supabase
+  if (useSupabase()) {
+    await initSupabaseStorage();
+    try {
+      const cloud = await loadFromSupabase();
+      if (cloud) {
+        db = cloud;
+        const defaults = getDefaultData();
+        Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
+        Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
+      } else {
+        db = getDefaultData();
+        seedData();
+        _dirty = true;
+        await saveToSupabase();
+        _dirty = false;
+      }
+      return db;
+    } catch (e) {
+      console.error('[DB] Supabase load failed, using memory:', e.message);
+    }
+  }
+  
+  // 最终回退：内存模式（数据不持久化）
+  db = getDefaultData();
+  seedData();
+  return db;
 }
 
-function loadDB() { if (db) return db; initDB(); if (!db) db = getDefaultData(); return db; }
-async function ensureDB() { if (dbReady) return db; await initDB(); return db; }
-function saveDB() {
-  if (!db) return;
-  if (useKV()) { saveToKV().catch(()=>{}); return; }
-  if (useSupabase()) saveToSupabase().catch(()=>{});
+async function saveDB() {
+  if (!db || !_dirty) return;
+  if (useKV()) {
+    try {
+      await saveToKV();
+      _dirty = false;
+    } catch (e) {
+      console.error('[DB] KV save failed:', e.message);
+    }
+    return;
+  }
+  if (useSupabase()) {
+    try { await saveToSupabase(); _dirty = false; } catch (e) { console.error('[DB] Supabase save failed:', e.message); }
+  }
 }
 
-let saveTimer = null;
-function scheduleSave() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveDB(); saveTimer = null; }, 100); }
+// 兼容旧接口
+async function ensureDB() { return loadDB(); }
+async function initDB() { return loadDB(); }
+function markDirty() { _dirty = true; }
 function getNextId(t) { if (!db.nextId[t]) db.nextId[t] = 1; return db.nextId[t]++; }
 
 // ===== 种子数据 =====
@@ -361,13 +372,13 @@ function seedData() {
 }
 
 // ===== Query Helpers =====
-function getDB() { return loadDB(); }
+function getDB() { return db || loadDB(); }
 function findById(t, id) { return db[t].find(r => r.id === id); }
 function findOne(t, c) { return db[t].find(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
 function findAll(t, c) { if (!c) return [...db[t]]; return db[t].filter(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
-function insert(t, d) { const r = { id: getNextId(t), ...d }; db[t].push(r); scheduleSave(); return r; }
-function update(t, id, u) { const r = findById(t, id); if (r) { Object.assign(r, u); scheduleSave(); } return r; }
-function remove(t, c) { db[t] = db[t].filter(r => !Object.entries(c).every(([k,v]) => r[k] === v)); }
-function increment(t, id, f, a=1) { const r = findById(t, id); if (r) { r[f] = (r[f]||0)+a; scheduleSave(); } }
+function insert(t, d) { const r = { id: getNextId(t), ...d }; db[t].push(r); _dirty = true; return r; }
+function update(t, id, u) { const r = findById(t, id); if (r) { Object.assign(r, u); _dirty = true; } return r; }
+function remove(t, c) { const before = db[t].length; db[t] = db[t].filter(r => !Object.entries(c).every(([k,v]) => r[k] === v)); if (db[t].length !== before) _dirty = true; }
+function increment(t, id, f, a=1) { const r = findById(t, id); if (r) { r[f] = (r[f]||0)+a; _dirty = true; } }
 
-module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, scheduleSave, setEnv };
+module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, markDirty, setEnv };

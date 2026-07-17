@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import {
-  getDB, findById, findOne, findAll,
-  insert, update, remove, increment, scheduleSave, ensureDB, setEnv,
+  loadDB, saveDB, getDB, findById, findOne, findAll,
+  insert, update, remove, increment, markDirty, setEnv,
 } from '../../database.js';
 
 const JWT_SECRET = 'hanlin-forum-secret-2026';
@@ -138,7 +138,7 @@ async function handleRequest(request) {
   const method = request.method;
 
   try {
-  await ensureDB();
+  await loadDB();
     // ===== POST 路由 =====
     if (method === 'POST') {
       // --- AUTH ---
@@ -448,7 +448,7 @@ async function handleRequest(request) {
             }
             count++;
           }
-          scheduleSave();
+          markDirty();
           return json({ success: true, count, message: `已删除${count}篇帖子` });
         }
         if (action === 'pin' || action === 'unpin') {
@@ -804,7 +804,7 @@ async function handleRequest(request) {
         if (error) return error;
         const db = getDB();
         db.notifications.forEach(n => { if (n.user_id === user.id) n.is_read = 1; });
-        scheduleSave();
+        markDirty();
         return json({ success: true });
       }
     }
@@ -842,7 +842,7 @@ async function handleRequest(request) {
           if (author && author.post_count > 0) author.post_count -= 1;
         }
 
-        scheduleSave();
+        markDirty();
         return json({ success: true });
       }
 
@@ -865,7 +865,14 @@ async function handleRequest(request) {
 }
 
 export async function onRequest(context) {
-  const { request, env } = context;
+  const { request, env, waitUntil } = context;
   setEnv(env);
-  return handleRequest(request);
+  const response = await handleRequest(request);
+  // 确保数据写入 KV 完成后才释放 isolate
+  if (waitUntil) {
+    waitUntil(saveDB());
+  } else {
+    await saveDB();
+  }
+  return response;
 }
