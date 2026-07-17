@@ -1,0 +1,12 @@
+name = "hanlin-forum"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "./public"
+
+[vars]
+SUPABASE_URL = "https://pgussylfchuqtlbdknlq.supabase.co"
+SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBndXNzeWxmY2h1cXRsYmRrbnxxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDExODc0NywiZXhwIjoyMDk5Njk0NzQ3fQ.UvgcapDYOcvY1AB5Bm_wVkdB-tSyF5GjPhJ-TPbzo_U"
+
+[[kv_namespaces]]
+binding = "FORUM_DB"
+id = "0436c2c0a1aa4dc9879dafa193ed3307"

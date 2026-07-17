@@ -32,7 +32,22 @@ const API = {
     if (state.token) headers['X-Auth-Token'] = state.token;
     try {
       const res = await fetch(API_BASE + url, { ...options, headers });
-      const data = await res.json();
+      // 检查响应类型，防止非 JSON 响应导致解析错误
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        // 服务器返回了非 JSON（可能是 HTML 错误页面）
+        if (res.status === 405) throw new Error('服务器暂时不可用，请稍后重试');
+        if (!res.ok) throw new Error('请求失败 (' + res.status + ')');
+        throw new Error('服务器响应格式错误，请刷新页面重试');
+      }
+      const text = await res.text();
+      if (!text) throw new Error('服务器返回空响应，请稍后重试');
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('服务器响应解析失败，请稍后重试');
+      }
       if (!res.ok) throw new Error(data.error || '请求失败');
       return data;
     } catch (e) {
@@ -43,6 +58,10 @@ const API = {
         if (!window.location.hash.startsWith('#/login')) {
           navigate('/login');
         }
+      }
+      // 网络错误
+      if (e.name === 'TypeError' && e.message.includes('fetch')) {
+        throw new Error('网络连接失败，请检查网络后重试');
       }
       throw e;
     }
@@ -182,6 +201,36 @@ function getCategoryBySlug(slug) {
 async function renderShell(content) {
   const isAuthPage = getRoute().startsWith('/login');
   if (isAuthPage) return content;
+
+  // For non-logged-in users viewing shared posts, show minimal shell
+  if (!state.user && !state.isGuest && getRoute().startsWith('/post/')) {
+    return `
+      <header class="app-header">
+        <div class="logo" onclick="navigate('/login')">
+          <div class="logo-icon"><i class="fas fa-feather"></i></div>
+          <span class="gradient-text">翰林论坛</span>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-primary btn-sm" onclick="navigate('/login')">登录 / 注册</button>
+        </div>
+      </header>
+      <main class="main-content" style="margin:0 auto;max-width:800px;padding:20px 16px 80px">${content}</main>
+      <nav class="mobile-nav">
+        <button class="mobile-nav-item active" onclick="navigate('/login')">
+          <i class="fas fa-home nav-icon"></i><span>首页</span>
+        </button>
+        <button class="mobile-nav-item" onclick="navigate('/login')">
+          <i class="fas fa-th-large nav-icon"></i><span>分类</span>
+        </button>
+        <button class="mobile-nav-item" onclick="navigate('/login')">
+          <i class="fas fa-lightbulb nav-icon"></i><span>建议</span>
+        </button>
+        <button class="mobile-nav-item" onclick="navigate('/login')">
+          <i class="fas fa-user nav-icon"></i><span>登录</span>
+        </button>
+      </nav>
+    `;
+  }
 
   const userAvatar = state.user
     ? `<div class="user-avatar-btn" onclick="navigate('/profile/${state.user.id}')">
@@ -436,7 +485,9 @@ async function handleLogin() {
     const data = await API.post('/api/auth/login', { username, password });
     state.token = data.token;
     state.user = data.user;
+    state.isGuest = false;
     localStorage.setItem('token', data.token);
+    localStorage.removeItem('isGuest');
     toast('登录成功，欢迎回来！', 'success');
     navigate('/');
     await loadCategories();
@@ -466,7 +517,9 @@ async function handleRegister() {
     const data = await API.post('/api/auth/register', { nickname, username, password, department, role: role });
     state.token = data.token;
     state.user = data.user;
+    state.isGuest = false;
     localStorage.setItem('token', data.token);
+    localStorage.removeItem('isGuest');
     toast('注册成功，欢迎加入翰林论坛！', 'success');
     navigate('/');
     await loadCategories();
@@ -498,6 +551,7 @@ function renderPostList(posts, loading = false) {
     return `
       <div class="glass post-card" style="--cat-color:${cat.color}" onclick="navigate('/post/${post.id}')">
         ${post.is_pinned ? '<span class="post-pin-badge"><i class="fas fa-thumbtack"></i> 置顶</span>' : ''}
+        ${post.is_hot ? '<span class="post-pin-badge" style="background:rgba(220,38,38,0.15);color:#dc2626"><i class="fas fa-fire"></i> 热门</span>' : ''}
         <span class="post-category-tag" style="background:${cat.color}22;color:${cat.color}">
           <span class="cat-dot" style="background:${cat.color}"></span>${escapeHtml(cat.name)}
         </span>
@@ -657,7 +711,17 @@ async function renderPostDetail(postId) {
   const cat = post.category || {};
   const author = post.author || {};
 
+  const loginBanner = (!state.user && !state.isGuest) ? `
+    <div class="glass" style="padding:12px 16px;margin-bottom:12px;text-align:center;border:1px solid var(--c-gold);background:rgba(201,162,39,0.08)">
+      <i class="fas fa-info-circle" style="color:var(--c-gold)"></i>
+      <span style="font-size:0.85rem;color:var(--text-secondary)">你正在浏览分享的帖子，</span>
+      <a style="color:var(--c-burgundy);font-weight:600;cursor:pointer;text-decoration:underline" onclick="navigate('/login')">登录 / 注册</a>
+      <span style="font-size:0.85rem;color:var(--text-secondary)">后可以点赞、评论和投票</span>
+    </div>
+  ` : '';
+
   return `
+    ${loginBanner}
     <div class="glass post-detail">
       <div style="margin-bottom:12px">
         <span class="post-category-tag" style="background:${cat.color || '#6366f1'}22;color:${cat.color || '#6366f1'}">
@@ -801,6 +865,16 @@ function renderCreatePost() {
           <input type="text" class="tag-input" id="tagInput" placeholder="输入标签..." onkeydown="handleTagInput(event)">
         </div>
       </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="pollToggle" onchange="togglePollForm()" style="width:18px;height:18px;cursor:pointer">
+          <i class="fas fa-chart-bar" style="color:var(--c-teal)"></i> 添加投票
+        </label>
+        <div id="pollForm" style="display:none;margin-top:8px">
+          <input type="text" class="form-input" id="pollQuestion" placeholder="输入投票问题，如：你支持这个提议吗？" style="margin-bottom:8px">
+          <p style="font-size:0.75rem;color:var(--text-tertiary)">用户可选择"认同"或"不认同"进行投票</p>
+        </div>
+      </div>
       <div id="postError"></div>
       <div class="flex gap-2">
         <button class="btn btn-ghost" onclick="navigate('/')">取消</button>
@@ -810,6 +884,15 @@ function renderCreatePost() {
       </div>
     </div>
   `;
+}
+
+function togglePollForm() {
+  const form = document.getElementById('pollForm');
+  const toggle = document.getElementById('pollToggle');
+  form.style.display = toggle.checked ? 'block' : 'none';
+  if (!toggle.checked) {
+    document.getElementById('pollQuestion').value = '';
+  }
 }
 
 let postTags = [];
@@ -847,11 +930,20 @@ async function submitPost() {
     $('#postError').innerHTML = '<div class="form-error">请填写标题和内容</div>';
     return;
   }
+  const pollToggle = document.getElementById('pollToggle');
+  let poll_question = '';
+  if (pollToggle && pollToggle.checked) {
+    poll_question = document.getElementById('pollQuestion').value.trim();
+    if (!poll_question) {
+      $('#postError').innerHTML = '<div class="form-error">请输入投票问题，或取消勾选"添加投票"</div>';
+      return;
+    }
+  }
   const btn = $('#submitPostBtn');
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 发布中...';
   try {
-    const data = await API.post('/api/posts', { title, content, category_id, tags: postTags });
+    const data = await API.post('/api/posts', { title, content, category_id, tags: postTags, poll_question });
     postTags = [];
     toast('发布成功！', 'success');
     navigate(`/post/${data.post.id}`);
@@ -1263,18 +1355,29 @@ async function supportSuggestion(sugId) {
 function sharePost(postId) {
   const url = `${window.location.origin}/#/post/${postId}`;
   const post = state.currentPost;
+  // Auto-copy to clipboard
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => {
+      toast('帖子链接已复制到剪贴板', 'success');
+    }).catch(() => {
+      fallbackCopyLink(url);
+    });
+  } else {
+    fallbackCopyLink(url);
+  }
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
   modal.innerHTML = `
     <div class="glass modal-content">
       <h2 style="margin-bottom:8px;text-align:center"><i class="fas fa-share-alt" style="color:var(--c-teal)"></i> 分享帖子</h2>
-      <p style="text-align:center;font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px">${escapeHtml(post?.title || '')}</p>
+      <p style="text-align:center;font-size:0.85rem;color:var(--text-secondary);margin-bottom:12px">${escapeHtml(post?.title || '')}</p>
+      <div style="background:var(--bg-surface);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;display:flex;align-items:center;gap:8px">
+        <i class="fas fa-link" style="color:var(--c-teal);flex-shrink:0"></i>
+        <input type="text" value="${url}" readonly style="flex:1;border:none;background:transparent;font-size:0.8rem;color:var(--text-secondary);outline:none" id="shareUrlInput">
+        <button class="btn btn-primary btn-sm" onclick="copyLink('${url}')"><i class="fas fa-copy"></i> 复制</button>
+      </div>
       <div class="share-grid">
-        <div class="share-option" onclick="shareToWechat('${url}', '${escapeHtml(post?.title || '')}')">
-          <div class="share-icon share-wechat"><i class="fab fa-weixin"></i></div>
-          <span class="share-label">微信</span>
-        </div>
         <div class="share-option" onclick="shareToWeibo('${url}', '${escapeHtml(post?.title || '')}')">
           <div class="share-icon share-weibo"><i class="fab fa-weibo"></i></div>
           <span class="share-label">微博</span>
@@ -1283,15 +1386,22 @@ function sharePost(postId) {
           <div class="share-icon share-qq"><i class="fab fa-qq"></i></div>
           <span class="share-label">QQ</span>
         </div>
-        <div class="share-option" onclick="copyLink('${url}')">
-          <div class="share-icon share-link"><i class="fas fa-link"></i></div>
-          <span class="share-label">复制链接</span>
-        </div>
       </div>
-      <button class="btn btn-ghost btn-block" onclick="this.closest('.modal-overlay').remove()">取消</button>
+      <p style="text-align:center;font-size:0.75rem;color:var(--text-tertiary);margin-top:12px">链接已自动复制到剪贴板，可直接粘贴分享</p>
+      <button class="btn btn-ghost btn-block" style="margin-top:8px" onclick="this.closest('.modal-overlay').remove()">关闭</button>
     </div>
   `;
   document.body.appendChild(modal);
+}
+
+function fallbackCopyLink(url) {
+  const input = document.createElement('input');
+  input.value = url;
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand('copy');
+  document.body.removeChild(input);
+  toast('帖子链接已复制', 'success');
 }
 
 function shareToWechat(url, title) {
@@ -1441,6 +1551,7 @@ async function renderAdminPanel() {
         <button class="admin-tab ${adminTab === 'dashboard' ? 'active' : ''}" onclick="switchAdminTab('dashboard')">仪表盘</button>
         <button class="admin-tab ${adminTab === 'users' ? 'active' : ''}" onclick="switchAdminTab('users')">用户管理</button>
         <button class="admin-tab ${adminTab === 'posts' ? 'active' : ''}" onclick="switchAdminTab('posts')">帖子管理</button>
+        <button class="admin-tab ${adminTab === 'suggestions' ? 'active' : ''}" onclick="switchAdminTab('suggestions')">意见反馈</button>
         <button class="admin-tab ${adminTab === 'announce' ? 'active' : ''}" onclick="switchAdminTab('announce')">发布公告</button>
         <button class="admin-tab ${adminTab === 'poll' ? 'active' : ''}" onclick="switchAdminTab('poll')">发起投票</button>
         <button class="admin-tab ${adminTab === 'create-user' ? 'active' : ''}" onclick="switchAdminTab('create-user')"><i class="fas fa-user-plus"></i> 创建用户</button>
@@ -1451,6 +1562,7 @@ async function renderAdminPanel() {
         ${adminTab === 'dashboard' ? renderAdminDashboard(stats) : ''}
         ${adminTab === 'users' ? renderAdminUsers(users) : ''}
         ${adminTab === 'posts' ? renderAdminPosts(posts) : ''}
+        ${adminTab === 'suggestions' ? await renderAdminSuggestions() : ''}
         ${adminTab === 'announce' ? renderAdminAnnounceForm() : ''}
         ${adminTab === 'poll' ? renderAdminPollForm(posts) : ''}
         ${adminTab === 'create-user' ? renderAdminCreateUser() : ''}
@@ -1530,23 +1642,102 @@ function renderAdminUsers(users) {
   `;
 }
 
+var adminSelectedPosts = new Set();
+
 function renderAdminPosts(posts) {
   if (!posts.length) return '<div class="empty-state"><p>暂无帖子</p></div>';
   return `
-    <p style="margin-bottom:12px;color:var(--text-secondary);font-size:0.85rem">共 ${posts.length} 篇帖子</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <p style="color:var(--text-secondary);font-size:0.85rem">共 ${posts.length} 篇帖子 · 已选 <span id="selCount">${adminSelectedPosts.size}</span> 篇</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-ghost" onclick="adminSelectAllPosts(${posts.length})"><i class="fas fa-check-square"></i> 全选</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminClearSelection()"><i class="fas fa-square"></i> 取消全选</button>
+        <button class="btn btn-sm" style="background:var(--c-gold);color:white" onclick="adminBatchAction('hot')"><i class="fas fa-fire"></i> 设为热门</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminBatchAction('unhot')"><i class="fas fa-fire-extinguisher"></i> 取消热门</button>
+        <button class="btn btn-sm" style="background:var(--c-burgundy);color:white" onclick="adminBatchAction('pin')"><i class="fas fa-thumbtack"></i> 置顶</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminBatchAction('unpin')"><i class="fas fa-thumbtack"></i> 取消置顶</button>
+        <button class="btn btn-sm" style="background:#dc2626;color:white" onclick="adminBatchAction('delete')"><i class="fas fa-trash"></i> 批量删除</button>
+      </div>
+    </div>
     ${posts.map(p => `
-      <div class="admin-user-row">
+      <div class="admin-user-row" style="${adminSelectedPosts.has(p.id) ? 'background:rgba(201,162,39,0.1)' : ''}">
+        <input type="checkbox" ${adminSelectedPosts.has(p.id) ? 'checked' : ''} onchange="adminTogglePost(${p.id})" style="width:18px;height:18px;cursor:pointer;flex-shrink:0">
         <div class="admin-user-info">
-          <div class="admin-user-name">${escapeHtml(p.title)}</div>
-          <div class="admin-user-meta">${escapeHtml(p.author?.nickname || '未知')} · ${p.comment_count || 0}评 · ${formatTime(p.created_at)}</div>
+          <div class="admin-user-name">
+            ${escapeHtml(p.title)}
+            ${p.is_pinned ? '<span class="admin-badge" style="background:var(--c-gold);color:white">置顶</span>' : ''}
+            ${p.is_hot ? '<span class="admin-badge" style="background:#dc2626;color:white">热门</span>' : ''}
+          </div>
+          <div class="admin-user-meta">${escapeHtml(p.author?.nickname || '未知')} · ${p.comment_count || 0}评 · ${p.views || 0}浏览 · ${formatTime(p.created_at)}</div>
         </div>
         <div class="admin-user-actions">
-          <button class="admin-ban-btn" onclick="navigate('/post/${p.id}')"><i class="fas fa-eye"></i> 查看</button>
-          <button class="admin-delete-btn" onclick="adminDeletePost(${p.id}, '${escapeHtml(p.title).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i> 删除</button>
+          <button class="admin-ban-btn" onclick="navigate('/post/${p.id}')"><i class="fas fa-eye"></i></button>
+          <button class="admin-ban-btn" onclick="adminToggleHot(${p.id})" title="切换热门"><i class="fas fa-fire"></i></button>
+          <button class="admin-ban-btn" onclick="adminTogglePin(${p.id})" title="切换置顶"><i class="fas fa-thumbtack"></i></button>
+          <button class="admin-delete-btn" onclick="adminDeletePost(${p.id}, '${escapeHtml(p.title).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
         </div>
       </div>
     `).join('')}
   `;
+}
+
+function adminTogglePost(postId) {
+  if (adminSelectedPosts.has(postId)) adminSelectedPosts.delete(postId);
+  else adminSelectedPosts.add(postId);
+  render();
+}
+
+function adminSelectAllPosts(total) {
+  if (adminSelectedPosts.size === total) {
+    adminSelectedPosts.clear();
+  } else {
+    const posts = state.adminData?.posts || [];
+    posts.forEach(p => adminSelectedPosts.add(p.id));
+  }
+  render();
+}
+
+function adminClearSelection() {
+  adminSelectedPosts.clear();
+  render();
+}
+
+async function adminBatchAction(action) {
+  if (adminSelectedPosts.size === 0) { toast('请先选择帖子', 'error'); return; }
+  if (action === 'delete') {
+    if (!confirm('确定要删除选中的 ' + adminSelectedPosts.size + ' 篇帖子吗？\n删除后无法恢复！')) return;
+  }
+  const post_ids = Array.from(adminSelectedPosts);
+  try {
+    const data = await API.post('/api/admin/posts/batch', { action, post_ids });
+    toast(data.message || '操作成功', 'success');
+    adminSelectedPosts.clear();
+    render();
+  } catch (e) {
+    toast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function adminToggleHot(postId) {
+  try {
+    const posts = state.adminData?.posts || [];
+    const post = posts.find(p => p.id === postId);
+    const isHot = post ? (post.is_hot || 0) : 0;
+    await API.request('/api/admin/posts/' + postId, { method: 'PUT', body: JSON.stringify({ is_hot: !isHot }) });
+    toast(isHot ? '已取消热门' : '已设为热门', 'success');
+    render();
+  } catch (e) { toast('操作失败: ' + e.message, 'error'); }
+}
+
+async function adminTogglePin(postId) {
+  try {
+    const posts = state.adminData?.posts || [];
+    const post = posts.find(p => p.id === postId);
+    const isPinned = post ? (post.is_pinned || 0) : 0;
+    await API.request('/api/admin/posts/' + postId, { method: 'PUT', body: JSON.stringify({ is_pinned: !isPinned }) });
+    toast(isPinned ? '已取消置顶' : '已置顶', 'success');
+    render();
+  } catch (e) { toast('操作失败: ' + e.message, 'error'); }
 }
 
 function renderAdminAnnounceForm() {
@@ -1576,6 +1767,83 @@ function renderAdminAnnounceForm() {
 }
 
 var announcements_global = [];
+
+async function renderAdminSuggestions() {
+  let suggestions = [];
+  try {
+    const data = await API.get('/api/admin/suggestions');
+    suggestions = data.suggestions || [];
+  } catch (e) {
+    return '<div class="empty-state"><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
+  }
+  if (!suggestions.length) return '<div class="empty-state"><p>暂无建议反馈</p></div>';
+
+  const statusLabels = {
+    pending: { label: '待处理', color: '#9B8070' },
+    reviewing: { label: '审核中', color: '#D4AF37' },
+    accepted: { label: '已采纳', color: '#8B6914' },
+    done: { label: '已完成', color: '#8B2323' },
+  };
+
+  return `
+    <p style="margin-bottom:12px;color:var(--text-secondary);font-size:0.85rem">共 ${suggestions.length} 条建议反馈</p>
+    ${suggestions.map(s => {
+      const st = statusLabels[s.status] || statusLabels.pending;
+      return `
+        <div class="glass" style="padding:16px;margin-bottom:12px;border-left:4px solid ${st.color}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              ${getAvatarHtml(s.nickname, s.avatar_color, 'sm')}
+              <div>
+                <div style="font-weight:600;font-size:0.85rem">${escapeHtml(s.nickname || '匿名')} <span style="color:var(--text-tertiary);font-weight:400;font-size:0.75rem">${escapeHtml(s.department || '')}</span></div>
+                <div style="font-size:0.7rem;color:var(--text-tertiary)">@${escapeHtml(s.username || '')} · ${formatTime(s.created_at)}</div>
+              </div>
+            </div>
+            <span style="padding:3px 10px;border-radius:12px;font-size:0.75rem;color:white;background:${st.color}">${st.label}</span>
+          </div>
+          <h4 style="font-size:0.95rem;margin-bottom:6px">${escapeHtml(s.title)}</h4>
+          <p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.6;margin-bottom:8px">${escapeHtml(s.content)}</p>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;font-size:0.78rem;color:var(--text-tertiary)">
+            <span><i class="fas fa-thumbs-up"></i> ${s.support_count || 0} 支持</span>
+            <span><i class="fas fa-tag"></i> ${escapeHtml(s.category || 'general')}</span>
+            ${s.priority ? '<span><i class="fas fa-flag"></i> 优先级 ' + s.priority + '</span>' : ''}
+          </div>
+          ${s.admin_reply ? `
+            <div style="background:var(--bg-surface);border-radius:8px;padding:10px;margin-bottom:10px;font-size:0.82rem">
+              <div style="font-weight:600;color:var(--c-teal);margin-bottom:4px"><i class="fas fa-reply"></i> 管理员回复</div>
+              <div style="color:var(--text-secondary)">${escapeHtml(s.admin_reply)}</div>
+            </div>
+          ` : ''}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:1;min-width:200px">
+              <label style="font-size:0.75rem;color:var(--text-tertiary)">管理员回复</label>
+              <input type="text" class="form-input" id="sugReply_${s.id}" placeholder="输入回复内容..." value="${escapeHtml(s.admin_reply || '')}" style="font-size:0.82rem">
+            </div>
+            <select class="form-input" id="sugStatus_${s.id}" style="width:auto;font-size:0.82rem;padding:6px 10px">
+              <option value="pending" ${s.status === 'pending' ? 'selected' : ''}>待处理</option>
+              <option value="reviewing" ${s.status === 'reviewing' ? 'selected' : ''}>审核中</option>
+              <option value="accepted" ${s.status === 'accepted' ? 'selected' : ''}>已采纳</option>
+              <option value="done" ${s.status === 'done' ? 'selected' : ''}>已完成</option>
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="adminUpdateSuggestion(${s.id})"><i class="fas fa-save"></i> 保存</button>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+async function adminUpdateSuggestion(sugId) {
+  const reply = document.getElementById('sugReply_' + sugId).value.trim();
+  const status = document.getElementById('sugStatus_' + sugId).value;
+  try {
+    await API.request('/api/admin/suggestions/' + sugId, { method: 'PUT', body: JSON.stringify({ status, admin_reply: reply }) });
+    toast('建议已更新', 'success');
+    render();
+  } catch (e) {
+    toast('更新失败: ' + e.message, 'error');
+  }
+}
 
 function renderAdminPollForm(posts) {
   return `
@@ -1778,14 +2046,31 @@ async function adminCreatePoll() {
 // ===== Init =====
 async function init() {
   if (state.token) {
-    await checkAuth();
-    await loadCategories();
-    await loadNotifications();
+    const ok = await checkAuth();
+    if (ok) {
+      await loadCategories();
+      await loadNotifications();
+    } else {
+      // Token expired or invalid
+      state.token = null;
+      state.user = null;
+      localStorage.removeItem('token');
+      await loadCategories();
+      var route = getRoute();
+      if (!route.startsWith('/login') && !route.startsWith('/post/')) {
+        navigate('/login');
+      }
+    }
   } else if (state.isGuest) {
-    // Guest mode: skip auth and go straight to loading
+    // Guest mode - allow browsing
     await loadCategories();
-  } else if (!getRoute().startsWith('/login')) {
-    navigate('/login');
+  } else {
+    await loadCategories();
+    // Allow viewing shared post links without login
+    var route = getRoute();
+    if (!route.startsWith('/login') && !route.startsWith('/post/')) {
+      navigate('/login');
+    }
   }
 
   window.addEventListener('hashchange', render);

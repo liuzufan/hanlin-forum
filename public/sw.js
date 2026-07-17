@@ -1,9 +1,9 @@
-// 翰林校园论坛 Service Worker
-const CACHE_NAME = 'hanlin-forum-v9';
+// 翰林校园论坛 Service Worker v13
+const CACHE_NAME = 'hanlin-forum-v13';
 const STATIC_ASSETS = [
   '/',
-  '/css/style.css?v=9',
-  '/js/app.js?v=9',
+  '/css/style.css?v=13',
+  '/js/app.js?v=13',
   '/manifest.json'
 ];
 
@@ -31,8 +31,30 @@ self.addEventListener('activate', function(event) {
 self.addEventListener('fetch', function(event) {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+  // 永远不缓存 API 请求
   if (url.pathname.startsWith('/api/')) return;
-  
+
+  // Network-first for navigation requests (HTML pages)
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).then(function(response) {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(function(cache) {
+            cache.put(event.request, clone).catch(function() {});
+          });
+        }
+        return response;
+      }).catch(function() {
+        return caches.match(event.request).then(function(cached) {
+          return cached || caches.match('/');
+        });
+      })
+    );
+    return;
+  }
+
+  // Cache-first for static assets
   event.respondWith(
     caches.match(event.request).then(function(cached) {
       return cached || fetch(event.request).then(function(response) {

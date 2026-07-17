@@ -1,19 +1,24 @@
 /**
- * 翰林校园论坛 - 数据库模块 (Serverless 版)
- * 使用 Supabase Storage 云端存储，fetch API 调用
+ * 翰林校园论坛 - 数据库模块 (Cloudflare KV + Supabase 版)
+ * 优先使用 Cloudflare KV 持久化，回退到 Supabase Storage
  * 无 fs/path 依赖，兼容 serverless 环境
  */
 const bcrypt = require('bcryptjs');
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
-const USE_SUPABASE = !!(SUPABASE_URL && SUPABASE_KEY);
+let _env = {};
+let db = null;
+let _dirty = false;
+
+function setEnv(env) { _env = env; db = null; _dirty = false; }
+
+function useKV() { return !!_env.FORUM_DB; }
+function getSupabaseUrl() { return _env.SUPABASE_URL || (typeof process !== 'undefined' && process.env?.SUPABASE_URL) || ''; }
+function getSupabaseKey() { return _env.SUPABASE_SERVICE_KEY || (typeof process !== 'undefined' && process.env?.SUPABASE_SERVICE_KEY) || ''; }
+function useSupabase() { return !!(getSupabaseUrl() && getSupabaseKey()); }
+
 const BUCKET_NAME = 'forum-data';
 const FILE_NAME = 'forum_db.json';
-
-let db = null;
-let dbReady = false;
-let initPromise = null;
+const KV_KEY = 'forum_db_v4';
 
 function getDefaultData() {
   return {
@@ -28,15 +33,15 @@ function getDefaultData() {
 
 // === Supabase Storage via fetch ===
 async function initSupabaseStorage() {
-  if (!USE_SUPABASE) return;
+  if (!useSupabase()) return;
   try {
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, { headers: { Authorization: `Bearer ${SUPABASE_KEY}` } });
+    const res = await fetch(`${getSupabaseUrl()}/storage/v1/bucket`, { headers: { Authorization: `Bearer ${getSupabaseKey()}` } });
     if (res.ok) {
       const buckets = await res.json();
       if (!buckets.find(b => b.name === BUCKET_NAME)) {
-        await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
+        await fetch(`${getSupabaseUrl()}/storage/v1/bucket`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+          headers: { Authorization: `Bearer ${getSupabaseKey()}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: BUCKET_NAME, public: false }),
         });
       }
@@ -45,59 +50,107 @@ async function initSupabaseStorage() {
 }
 
 async function loadFromSupabase() {
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET_NAME}/${FILE_NAME}`, { headers: { Authorization: `Bearer ${SUPABASE_KEY}` } });
+  const res = await fetch(`${getSupabaseUrl()}/storage/v1/object/${BUCKET_NAME}/${FILE_NAME}`, { headers: { Authorization: `Bearer ${getSupabaseKey()}` } });
   if (!res.ok) { if (res.status === 404) return null; throw new Error(`download: ${res.status}`); }
   return JSON.parse(await res.text());
 }
 
 async function saveToSupabase() {
   if (!db) return;
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET_NAME}/${FILE_NAME}`, {
+  const res = await fetch(`${getSupabaseUrl()}/storage/v1/object/${BUCKET_NAME}/${FILE_NAME}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'x-upsert': 'true' },
+    headers: { Authorization: `Bearer ${getSupabaseKey()}`, 'Content-Type': 'application/json', 'x-upsert': 'true' },
     body: JSON.stringify(db, null, 2),
   });
   if (!res.ok) console.error('[DB] save failed:', res.status);
 }
 
-// === Init ===
-function initDB() {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
-    if (USE_SUPABASE) {
-      await initSupabaseStorage();
-      try {
-        const cloud = await loadFromSupabase();
-        if (cloud) {
-          db = cloud;
-          const defaults = getDefaultData();
-          Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
-          Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
-        } else {
-          db = getDefaultData();
-          seedData();
-          await saveToSupabase();
-        }
-      } catch (e) {
-        console.error('[DB] Supabase load failed, using memory:', e.message);
-        db = getDefaultData();
-        seedData();
-      }
-    } else {
-      db = getDefaultData();
-      seedData();
-    }
-    dbReady = true;
-  })();
-  return initPromise;
+// === Cloudflare KV ===
+async function loadFromKV() {
+  const data = await _env.FORUM_DB.get(KV_KEY, 'json');
+  return data;
 }
 
-function loadDB() { if (db) return db; initDB(); if (!db) db = getDefaultData(); return db; }
-async function ensureDB() { if (dbReady) return db; await initDB(); return db; }
-function saveDB() { if (!db) return; if (USE_SUPABASE) saveToSupabase().catch(()=>{}); }
+async function saveToKV() {
+  if (!db) return;
+  await _env.FORUM_DB.put(KV_KEY, JSON.stringify(db));
+}
 
-let saveTimer = null;
-function scheduleSave() { if (saveTimer) clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveDB(); saveTimer = null; }, 100); }
+// === Init / Load / Save ===
+// 每次请求都从 KV 读取最新数据，确保数据一致性
+async function loadDB() {
+  if (db) return db;
+  
+  if (useKV()) {
+    try {
+      const cloud = await loadFromKV();
+      if (cloud) {
+        db = cloud;
+        const defaults = getDefaultData();
+        Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
+        Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
+      } else {
+        db = getDefaultData();
+        seedData();
+        _dirty = true;
+        await saveToKV();
+        _dirty = false;
+      }
+      return db;
+    } catch (e) {
+      console.error('[DB] KV load failed:', e.message);
+    }
+  }
+  
+  // 回退到 Supabase
+  if (useSupabase()) {
+    await initSupabaseStorage();
+    try {
+      const cloud = await loadFromSupabase();
+      if (cloud) {
+        db = cloud;
+        const defaults = getDefaultData();
+        Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
+        Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
+      } else {
+        db = getDefaultData();
+        seedData();
+        _dirty = true;
+        await saveToSupabase();
+        _dirty = false;
+      }
+      return db;
+    } catch (e) {
+      console.error('[DB] Supabase load failed, using memory:', e.message);
+    }
+  }
+  
+  // 最终回退：内存模式（数据不持久化）
+  db = getDefaultData();
+  seedData();
+  return db;
+}
+
+async function saveDB() {
+  if (!db || !_dirty) return;
+  if (useKV()) {
+    try {
+      await saveToKV();
+      _dirty = false;
+    } catch (e) {
+      console.error('[DB] KV save failed:', e.message);
+    }
+    return;
+  }
+  if (useSupabase()) {
+    try { await saveToSupabase(); _dirty = false; } catch (e) { console.error('[DB] Supabase save failed:', e.message); }
+  }
+}
+
+// 兼容旧接口
+async function ensureDB() { return loadDB(); }
+async function initDB() { return loadDB(); }
+function markDirty() { _dirty = true; }
 function getNextId(t) { if (!db.nextId[t]) db.nextId[t] = 1; return db.nextId[t]++; }
 
 // ===== 种子数据 =====
@@ -168,7 +221,7 @@ const CATEGORIES = [
 ];
 
 const SAMPLE_POSTS = [
-  { user_idx: 3, cat_slug: 'campus-life', title: '高三连周上学太累了，放假那周能不能不要周六才回去', content: '真的扛不住了。连周上学第三周了，每天6点起11点睡，周末只有半天假。\n\n放假那周六下午才让回去，周日晚上又要回来，在家待不到24小时。\n\n我知道高三辛苦是应该的，但能不能放假那周五下午就让走？多在家待一晚，周一来学校状态都不一样。\n\n大家觉得呢？', tags: ['高三', '连周', '放假'], is_hot_post: true, poll: { question: '你认同放假那周提前到周五下午离校吗？', agree: 142, disagree: 25 } },
+  { user_idx: 4, cat_slug: 'campus-life', title: '准高三想问问，高三连周放假那周能不能周五下午就回家？', content: '马上升高三了，还没开学，但听学长学姐说高三会连周上课。\n\n意思是连续上两周或三周才放一次假，而且放假那周六下午才让走，周日晚上又要回来。\n\n在家待不到24小时，这也太短了吧？\n\n想问问大家，放假那周能不能周五下午就让走？多在家待一晚，周一回来状态也好一些。\n\n学长学姐们觉得这个提议合理吗？如果合理的话我想开学后跟老师反映一下。', tags: ['高三', '连周', '放假', '准高三'], is_hot_post: true, poll: { question: '你支持放假那周提前到周五下午离校吗？', agree: 32, disagree: 8 } },
   { user_idx: 2, cat_slug: 'campus-life', title: '食堂伙食一般般，说说我的真实感受', content: '吃了一学期了，说点实话：\n\n一楼套餐：菜品就那几样轮换，红烧肉有时候肥肉比肉多，青菜经常炒过头发黄。\n\n二楼风味：糖醋排骨还行但是量少，一碗面12块就那么几根。\n\n早餐豆浆兑水太多了，包子馅儿也越来越少。\n\n不是说难吃到不能吃，就是觉得伙食费一学期交那么多，质量能不能提一下？', tags: ['食堂', '伙食', '吐槽'] },
   { user_idx: 1, cat_slug: 'study', title: '导数压轴题做了一晚上还是不会，有没有大佬讲讲思路', content: '题目：已知f(x)=lnx-ax²，若f(x)≤0恒成立，求a的范围。\n\n我试着分离参数，但lnx/x²求导以后搞不下去了。看答案说要用到洛必达法则但我们没学过。\n\n有没有不超纲的解法？或者有谁能讲讲这个思路？', tags: ['数学', '导数', '高三'] },
   { user_idx: 4, cat_slug: 'study', title: '圆锥曲线真的要放弃了，每次考试都空着', content: '从高二到现在，圆锥曲线大题没有一次做完整过。\n\n联立方程算到一半就算错，韦达定理代进去以后化简不出来。\n\n感觉这题就是给学霸准备的，普通学生还是老老实实拿前面的分吧。\n\n有没有同感的？', tags: ['数学', '圆锥曲线', '放弃'] },
@@ -187,6 +240,11 @@ const SAMPLE_POSTS = [
   { user_idx: 49, cat_slug: 'campus-life', title: '学校门口文具店比网上贵好多，大家都在哪买', content: '同样的斑马中性笔，门口文具店8块，网上4块5。\n\n笔记本也贵，一本普通B5本子门口12块，拼多多6块包邮。\n\n但网上买要等2-3天，急用的时候只能门口买。\n\n大家有没有什么好的购买渠道推荐？', tags: ['文具', '价格', '购物'] },
   { user_idx: 48, cat_slug: 'campus-life', title: '宿舍空调能不能统一调到25度，上铺快热死了', content: '宿舍空调遥控器在宿管那里，统一设的27度。\n\n下铺还行，上铺离天花板近，热得跟蒸笼一样。\n\n能不能调到25度？或者至少26度？27度真的太热了。\n\n住过上铺的都懂这种感觉。', tags: ['宿舍', '空调', '温度'] },
   { user_idx: 42, cat_slug: 'campus-life', title: '运动会今年能不能搞个趣味项目多一些的', content: '去年运动会就跑步跳远铅球，大部分同学都只能看着。\n\n能不能加点趣味项目？比如两人三足、拔河、丢沙包之类的，参与度高一点。\n\n不爱运动的同学也想参加运动会啊。', tags: ['运动会', '趣味项目', '建议'] },
+  { user_idx: 20, cat_slug: 'campus-life', title: '暑假快结束了，作业还有一大半没写怎么办', content: '如题，放假前信誓旦旦要好好学习，结果天天打游戏睡到中午。\n\n现在还剩两周，数学卷子没写，英语阅读没做，物理练习册空白。\n\n有没有人跟我一样的？大家都是怎么补作业的？\n\n急急急，在线等！', tags: ['暑假', '作业', '补作业'] },
+  { user_idx: 11, cat_slug: 'campus-life', title: '推荐几款宿舍神器，亲测好用', content: '住校三年了，分享几个我觉得特别好用的宿舍神器：\n\n1. 床边挂篮：放手机、眼镜、耳机，不用弯腰拿东西\n2. 遮光床帘：午休不被光线影响，隐私感拉满\n3. USB小风扇：夏天续命神器（注意别被没收）\n4. 折叠收纳箱：放换季衣服，省空间\n5. 睡眠耳塞：舍友打呼噜也不怕\n\n大家还有什么好物推荐吗？', tags: ['宿舍', '好物', '推荐'] },
+  { user_idx: 22, cat_slug: 'study', title: '小学五年级数学应用题太难了，有没有简单的解题方法', content: '妹妹今年五年级，应用题总是做不出来，特别是行程问题和工程问题。\n\n比如：甲乙两人从AB两地相向而行...这种题她一看到就懵。\n\n有没有适合小学生理解的解题技巧？或者推荐什么练习册？\n\n作为哥哥想帮她但不知道怎么教。', tags: ['小学', '数学', '应用题'] },
+  { user_idx: 33, cat_slug: 'campus-life', title: '国际部AP考试出分了，分享下我的经验', content: '今年考了微积分BC、物理C力学、宏观经济三门，都是5分。\n\n分享几点经验：\n1. 微积分BC重点练FRQ，选择题刷Barron就够了\n2. 物理C力学把公式推导弄懂，不用死记\n3. 宏观经济理解AD-AS模型，其他都是延伸\n\n有想考AP的同学可以问我，知无不言！', tags: ['AP', '国际部', '经验'] },
+  { user_idx: 8, cat_slug: 'campus-life', title: '学校小卖部新进了几款零食，测评一下', content: '今天去小卖部发现多了几种新零食，买来试试：\n\n卫龙魔芋爽：辣度刚好，3块一包性价比高\n\n旺旺仙贝：经典老款，但比外面贵1块\n\n进口薯片：12块一筒，有点贵但味道确实好\n\n总结：魔芋爽推荐，其他看个人喜好。\n\n大家还有什么小卖部好物推荐吗？', tags: ['小卖部', '零食', '测评'] },
 ];
 
 const SAMPLE_COMMENTS = [
@@ -264,6 +322,18 @@ const SAMPLE_COMMENTS = [
   { post_idx: 17, user_idx: 3, content: '买个usb风扇偷偷用，别被查到就行' },
   { post_idx: 18, user_idx: 44, content: '拔河必须有！去年我们班输了不服气' },
   { post_idx: 18, user_idx: 46, content: '两人三足好玩，支持加趣味项目' },
+  { post_idx: 19, user_idx: 3, content: '同感！我现在还在补数学，感觉写不完了' },
+  { post_idx: 19, user_idx: 11, content: '我去年也是这样，最后两天通宵补完的，别学我' },
+  { post_idx: 19, user_idx: 15, content: '建议先写重要的科目，语文作文这种可以最后赶' },
+  { post_idx: 20, user_idx: 10, content: '遮光床帘真的刚需！没有它午休根本睡不着' },
+  { post_idx: 20, user_idx: 12, content: '折叠收纳箱在哪买的？求链接' },
+  { post_idx: 20, user_idx: 8, content: 'USB风扇建议买静音的，不然舍友会投诉' },
+  { post_idx: 21, user_idx: 24, content: '画线段图！行程问题画图就简单了' },
+  { post_idx: 21, user_idx: 39, content: '推荐《举一反三》系列，适合小学生' },
+  { post_idx: 22, user_idx: 31, content: '微积分BC确实要重点练FRQ，选择题比较简单' },
+  { post_idx: 22, user_idx: 34, content: '宏观经济理解IS-LM和AD-AS就稳了，恭喜5分！' },
+  { post_idx: 23, user_idx: 9, content: '魔芋爽确实好吃！3块钱快乐' },
+  { post_idx: 23, user_idx: 49, content: '进口薯片太贵了，偶尔吃吃还行' },
 ];
 
 const SAMPLE_SUGGESTIONS = [
@@ -292,7 +362,7 @@ function seedData() {
     const u = db.users[p.user_idx], c = db.categories.find(x=>x.slug===p.cat_slug);
     const hot = p.is_hot_post;
     const cc = SAMPLE_COMMENTS.filter(x=>x.post_idx===idx).length;
-    db.posts.push({ id: getNextId('posts'), user_id:u.id, category_id:c.id, title:p.title, content:p.content, images:'[]', created_at:new Date(now-(SAMPLE_POSTS.length-idx)*3600000*6).toISOString(), views:hot?Math.floor(Math.random()*200)+800:Math.floor(Math.random()*300)+50, likes:hot?Math.floor(Math.random()*20)+80:Math.floor(Math.random()*30)+5, upvotes:hot?Math.floor(Math.random()*20)+60:Math.floor(Math.random()*20)+3, downvotes:hot?Math.floor(Math.random()*3)+2:Math.floor(Math.random()*3), comment_count:cc, is_pinned:hot?1:0, tags:JSON.stringify(p.tags||[]) });
+    db.posts.push({ id: getNextId('posts'), user_id:u.id, category_id:c.id, title:p.title, content:p.content, images:'[]', created_at:new Date(now-(SAMPLE_POSTS.length-idx)*3600000*6).toISOString(), views:hot?Math.floor(Math.random()*200)+800:Math.floor(Math.random()*300)+50, likes:hot?Math.floor(Math.random()*20)+80:Math.floor(Math.random()*30)+5, upvotes:hot?Math.floor(Math.random()*20)+60:Math.floor(Math.random()*20)+3, downvotes:hot?Math.floor(Math.random()*3)+2:Math.floor(Math.random()*3), comment_count:cc, is_pinned:hot?1:0, is_hot:hot?1:0, tags:JSON.stringify(p.tags||[]) });
     if (p.poll) db.post_polls.push({ id: getNextId('post_polls'), post_id:db.posts[db.posts.length-1].id, question:p.poll.question, agree:p.poll.agree, disagree:p.poll.disagree });
   });
   SAMPLE_COMMENTS.forEach((c, i) => { const p=db.posts[c.post_idx], u=db.users[c.user_idx]; db.comments.push({ id: getNextId('comments'), post_id:p.id, user_id:u.id, parent_id:null, content:c.content, created_at:new Date(now-(SAMPLE_POSTS.length-c.post_idx)*3600000*5+i*600000).toISOString(), likes:Math.floor(Math.random()*8) }); });
@@ -302,13 +372,13 @@ function seedData() {
 }
 
 // ===== Query Helpers =====
-function getDB() { return loadDB(); }
+function getDB() { return db; }
 function findById(t, id) { return db[t].find(r => r.id === id); }
 function findOne(t, c) { return db[t].find(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
 function findAll(t, c) { if (!c) return [...db[t]]; return db[t].filter(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
-function insert(t, d) { const r = { id: getNextId(t), ...d }; db[t].push(r); scheduleSave(); return r; }
-function update(t, id, u) { const r = findById(t, id); if (r) { Object.assign(r, u); scheduleSave(); } return r; }
-function remove(t, c) { db[t] = db[t].filter(r => !Object.entries(c).every(([k,v]) => r[k] === v)); }
-function increment(t, id, f, a=1) { const r = findById(t, id); if (r) { r[f] = (r[f]||0)+a; scheduleSave(); } }
+function insert(t, d) { const r = { id: getNextId(t), ...d }; db[t].push(r); _dirty = true; return r; }
+function update(t, id, u) { const r = findById(t, id); if (r) { Object.assign(r, u); _dirty = true; } return r; }
+function remove(t, c) { const before = db[t].length; db[t] = db[t].filter(r => !Object.entries(c).every(([k,v]) => r[k] === v)); if (db[t].length !== before) _dirty = true; }
+function increment(t, id, f, a=1) { const r = findById(t, id); if (r) { r[f] = (r[f]||0)+a; _dirty = true; } }
 
-module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, scheduleSave };
+module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, markDirty, setEnv };
