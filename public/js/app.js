@@ -1246,13 +1246,13 @@ async function submitSuggestion() {
 }
 
 // ===== Render: Elections =====
-var electionVoteInfo = { today_votes: 0, votes_remaining: 3, voted_candidate_ids: [] };
+var electionVoteInfo = { today_votes: 0, votes_remaining: 3, voted_candidate_counts: {} };
 
 async function renderElectionsPage() {
   try {
     const data = await API.get('/api/elections');
     state.elections = data.elections || [];
-    electionVoteInfo = { today_votes: data.today_votes || 0, votes_remaining: data.votes_remaining !== undefined ? data.votes_remaining : 3, voted_candidate_ids: data.voted_candidate_ids || [] };
+    electionVoteInfo = { today_votes: data.today_votes || 0, votes_remaining: data.votes_remaining !== undefined ? data.votes_remaining : 3, voted_candidate_counts: data.voted_candidate_counts || {} };
   } catch (e) { toast(e.message, 'error'); }
 
   var isAdmin = state.user && state.user.role === 'admin';
@@ -1352,43 +1352,49 @@ function renderElectionCard(election, isAdmin) {
 
 function renderCandidate(candidate, election, isAdmin) {
   var percent = election.total_votes > 0 ? Math.round(candidate.vote_count / election.total_votes * 100) : 0;
-  var votedThis = electionVoteInfo.voted_candidate_ids.indexOf(candidate.id) !== -1;
-  var canVote = state.user && election.status === 'active' && !votedThis && electionVoteInfo.votes_remaining > 0;
+  var myVoteCount = electionVoteInfo.voted_candidate_counts[candidate.id] || 0;
+  var hasVoted = myVoteCount > 0;
+  var canVote = state.user && election.status === 'active' && electionVoteInfo.votes_remaining > 0;
   var noVoteReason = '';
   if (!state.user) noVoteReason = '登录后可投票';
   else if (election.status !== 'active') noVoteReason = '';
-  else if (votedThis) noVoteReason = '已投票';
   else if (electionVoteInfo.votes_remaining === 0) noVoteReason = '今日票数已用完';
+  var imgHtml = candidate.image
+    ? `<img src="${escapeHtml(candidate.image)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openImagePreview('${escapeHtml(candidate.image)}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`
+    : `<div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`;
   return `
-    <div style="display:flex;gap:12px;align-items:center;padding:12px;background:var(--bg-surface);border-radius:var(--radius);${votedThis ? 'border:2px solid var(--c-gold)' : ''}">
-      ${candidate.image ? `<img src="${escapeHtml(candidate.image)}" style="width:48px;height:48px;border-radius:50%;object-fit:cover" onerror="this.style.display='none'">` : `<div style="width:48px;height:48px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.2rem">${escapeHtml(candidate.name.charAt(0))}</div>`}
-      <div style="flex:1">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-          <div>
-            <span style="font-weight:700">${escapeHtml(candidate.name)}</span>
-            ${candidate.department ? `<span style="font-size:0.75rem;color:var(--text-tertiary);margin-left:6px">${escapeHtml(candidate.department)}</span>` : ''}
-            ${votedThis ? '<span style="font-size:0.7rem;color:var(--c-gold);margin-left:6px"><i class="fas fa-check-circle"></i> 已投</span>' : ''}
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;background:var(--bg-surface);border-radius:var(--radius);${hasVoted ? 'border:2px solid var(--c-gold)' : ''}">
+      ${imgHtml}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:4px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="font-weight:700;font-size:0.95rem">${escapeHtml(candidate.name)}</span>
+            ${candidate.department ? `<span style="font-size:0.72rem;color:var(--text-tertiary)">${escapeHtml(candidate.department)}</span>` : ''}
+            ${hasVoted ? '<span style="font-size:0.7rem;color:var(--c-gold);background:rgba(201,162,39,0.15);padding:1px 6px;border-radius:8px"><i class="fas fa-check-circle"></i> 已投' + myVoteCount + '票</span>' : ''}
           </div>
           <div style="display:flex;align-items:center;gap:6px">
-            <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:0.75rem" onclick="shareCandidate(${candidate.id}, '${escapeHtml(candidate.name).replace(/'/g, "\\'")}', '${escapeHtml(election.title).replace(/'/g, "\\'")}')" title="拉票分享"><i class="fas fa-bullhorn"></i> 拉票</button>
+            <button class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:0.73rem;color:var(--c-teal)" onclick="shareCandidate(${candidate.id}, '${escapeHtml(candidate.name).replace(/'/g, "\\'")}', '${escapeHtml(election.title).replace(/'/g, "\\'")}')" title="拉票分享"><i class="fas fa-bullhorn"></i> 拉票</button>
             ${isAdmin ? `<button class="admin-delete-btn" onclick="deleteCandidate(${candidate.id})" title="删除候选人"><i class="fas fa-times"></i></button>` : ''}
           </div>
         </div>
-        ${candidate.bio ? `<p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px">${escapeHtml(candidate.bio)}</p>` : ''}
-        <div style="display:flex;align-items:center;gap:8px">
-          <div style="flex:1;height:8px;background:var(--border-color);border-radius:4px;overflow:hidden">
-            <div style="width:${percent}%;height:100%;background:linear-gradient(90deg,var(--c-burgundy),var(--c-gold));border-radius:4px;transition:width 0.3s"></div>
+        ${candidate.bio ? `<p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px;line-height:1.4">${escapeHtml(candidate.bio)}</p>` : ''}
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <div style="flex:1;height:10px;background:var(--border-color);border-radius:5px;overflow:hidden">
+            <div style="width:${percent}%;height:100%;background:linear-gradient(90deg,var(--c-burgundy),var(--c-gold));border-radius:5px;transition:width 0.3s"></div>
           </div>
-          <span style="font-size:0.78rem;color:var(--text-secondary);min-width:50px;text-align:right">${candidate.vote_count}票 (${percent}%)</span>
+          <span style="font-size:0.8rem;color:var(--text-secondary);min-width:55px;text-align:right;font-weight:600">${candidate.vote_count}票</span>
         </div>
+        <div style="font-size:0.72rem;color:var(--text-tertiary)">${percent}% 占比</div>
       </div>
-      ${canVote ? `
-        <button class="btn btn-primary btn-sm" onclick="voteCandidate(${election.id}, ${candidate.id})">
-          <i class="fas fa-thumbs-up"></i> 投票
-        </button>
-      ` : noVoteReason ? `
-        <span style="font-size:0.73rem;color:var(--text-tertiary);min-width:60px;text-align:center">${noVoteReason}</span>
-      ` : ''}
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:64px">
+        ${canVote ? `
+          <button class="btn btn-primary btn-sm" style="padding:6px 12px" onclick="voteCandidate(${election.id}, ${candidate.id})">
+            <i class="fas fa-thumbs-up"></i> 投票
+          </button>
+        ` : noVoteReason ? `
+          <span style="font-size:0.7rem;color:var(--text-tertiary);text-align:center">${noVoteReason}</span>
+        ` : ''}
+      </div>
     </div>
   `;
 }
@@ -1485,7 +1491,7 @@ async function addCandidate(electionId) {
 async function voteCandidate(electionId, candidateId) {
   if (!state.user) { toast('请先登录后再投票', 'error'); navigate('/login'); return; }
   if (electionVoteInfo.votes_remaining <= 0) { toast('今日投票次数已用完，明天再来吧', 'error'); return; }
-  if (!confirm('确定投票给该候选人吗？\n今日剩余 ' + electionVoteInfo.votes_remaining + ' 票，投票后不可撤销。')) return;
+  if (!confirm('确定投票给该候选人吗？\n今日剩余 ' + electionVoteInfo.votes_remaining + ' 票，可给同一候选人投多票。')) return;
   try {
     const data = await API.post('/api/elections/' + electionId + '/vote', { candidate_id: candidateId });
     toast(data.message || '投票成功', 'success');
@@ -1507,35 +1513,47 @@ function shareCandidate(candidateId, candidateName, electionTitle) {
 }
 
 function showShareModal(text, url, title) {
+  // 移除已有弹窗
+  var existing = document.querySelectorAll('.share-modal-overlay');
+  existing.forEach(function(m) { m.remove(); });
+
   var modal = document.createElement('div');
-  modal.className = 'modal-overlay';
-  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.className = 'share-modal-overlay';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:flex-end;justify-content:center;z-index:9999;animation:fadeIn 0.2s ease';
   modal.innerHTML = `
-    <div class="glass" style="padding:24px;max-width:360px;width:90%;border-radius:16px;animation:slideUp 0.3s ease">
-      <h3 style="margin-bottom:16px;text-align:center"><i class="fas fa-share-alt" style="color:var(--c-teal)"></i> 分享</h3>
-      <div style="background:var(--bg-surface);padding:12px;border-radius:var(--radius);margin-bottom:16px;font-size:0.85rem;color:var(--text-secondary)">${escapeHtml(text)}</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
-        <div style="text-align:center;cursor:pointer" onclick="shareToWeibo('${encodeURIComponent(url)}','${encodeURIComponent(text)}')">
-          <div style="width:44px;height:44px;border-radius:50%;background:#e6162e;display:flex;align-items:center;justify-content:center;margin:0 auto 4px"><i class="fab fa-weibo" style="color:white;font-size:1.2rem"></i></div>
-          <span style="font-size:0.72rem;color:var(--text-secondary)">微博</span>
+    <div style="background:var(--bg-card);width:100%;max-width:420px;border-radius:20px 20px 0 0;padding:20px 16px 24px;box-shadow:0 -4px 20px rgba(0,0,0,0.15);animation:slideUp 0.3s ease">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h3 style="font-size:1rem;font-weight:700"><i class="fas fa-share-alt" style="color:var(--c-teal);margin-right:6px"></i>分享到</h3>
+        <button onclick="this.closest('.share-modal-overlay').remove()" style="width:28px;height:28px;border:none;background:var(--bg-surface);border-radius:50%;cursor:pointer;color:var(--text-secondary);font-size:0.9rem"><i class="fas fa-times"></i></button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="shareToWeibo('${encodeURIComponent(url)}','${encodeURIComponent(text)}')">
+          <div style="width:48px;height:48px;border-radius:50%;background:#e6162e;display:flex;align-items:center;justify-content:center"><i class="fab fa-weibo" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">微博</span>
         </div>
-        <div style="text-align:center;cursor:pointer" onclick="shareToQQ('${encodeURIComponent(url)}','${encodeURIComponent(title)}')">
-          <div style="width:44px;height:44px;border-radius:50%;background:#12b7f5;display:flex;align-items:center;justify-content:center;margin:0 auto 4px"><i class="fab fa-qq" style="color:white;font-size:1.2rem"></i></div>
-          <span style="font-size:0.72rem;color:var(--text-secondary)">QQ</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="shareToQQ('${encodeURIComponent(url)}','${encodeURIComponent(title)}')">
+          <div style="width:48px;height:48px;border-radius:50%;background:#12b7f5;display:flex;align-items:center;justify-content:center"><i class="fab fa-qq" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">QQ</span>
         </div>
-        <div style="text-align:center;cursor:pointer" onclick="copyLink('${url}')">
-          <div style="width:44px;height:44px;border-radius:50%;background:var(--c-teal);display:flex;align-items:center;justify-content:center;margin:0 auto 4px"><i class="fas fa-link" style="color:white;font-size:1.2rem"></i></div>
-          <span style="font-size:0.72rem;color:var(--text-secondary)">复制链接</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="copyLink('${url}');this.closest('.share-modal-overlay').remove()">
+          <div style="width:48px;height:48px;border-radius:50%;background:var(--c-teal);display:flex;align-items:center;justify-content:center"><i class="fas fa-link" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">复制链接</span>
         </div>
-        <div style="text-align:center;cursor:pointer" onclick="navigator.clipboard.writeText('${text.replace(/'/g, "\\'")} ${url}').then(()=>toast('文案已复制', 'success'))">
-          <div style="width:44px;height:44px;border-radius:50%;background:var(--c-gold);display:flex;align-items:center;justify-content:center;margin:0 auto 4px"><i class="fas fa-copy" style="color:white;font-size:1.2rem"></i></div>
-          <span style="font-size:0.72rem;color:var(--text-secondary)">复制文案</span>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="navigator.clipboard.writeText('${text.replace(/'/g, "\\'")} ${url}').then(function(){toast('文案已复制，可粘贴到微信分享','success');});this.closest('.share-modal-overlay').remove()">
+          <div style="width:48px;height:48px;border-radius:50%;background:#07c160;display:flex;align-items:center;justify-content:center"><i class="fab fa-weixin" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">微信文案</span>
         </div>
       </div>
-      <div style="text-align:center;font-size:0.78rem;color:var(--text-tertiary);margin-bottom:12px">
-        <i class="fas fa-info-circle"></i> 复制链接/文案后可粘贴到微信、朋友圈等分享
+
+      <div style="background:var(--bg-surface);padding:12px 14px;border-radius:12px;margin-bottom:16px">
+        <div style="font-size:0.72rem;color:var(--text-tertiary);margin-bottom:4px"><i class="fas fa-quote-left"></i> 分享文案预览</div>
+        <div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5;max-height:60px;overflow:hidden">${escapeHtml(text)}</div>
       </div>
-      <button class="btn btn-ghost" style="width:100%" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+
+      <div style="text-align:center;font-size:0.75rem;color:var(--text-tertiary);padding:4px">
+        <i class="fas fa-info-circle"></i> 复制链接或文案后，可粘贴到微信、朋友圈、QQ等平台分享
+      </div>
     </div>
   `;
   modal.onclick = function(e) { if (e.target === modal) modal.remove(); };

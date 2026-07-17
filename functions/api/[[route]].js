@@ -599,9 +599,6 @@ async function handleRequest(request) {
         const todayStr = now.toISOString().split('T')[0];
         const todayVotes = findAll('election_votes', { user_id: user.id }).filter(v => v.created_at.startsWith(todayStr));
         if (todayVotes.length >= 3) return json({ error: '今日投票次数已达上限（3票），明天再来吧' }, 400);
-        // 同一候选人只能投一次
-        const votedSame = findOne('election_votes', { candidate_id, user_id: user.id });
-        if (votedSame) return json({ error: '您已为该候选人投过票' }, 400);
         insert('election_votes', { election_id: electionId, candidate_id, user_id: user.id, created_at: new Date().toISOString() });
         increment('election_candidates', candidate_id, 'vote_count', 1);
         const remaining = 3 - todayVotes.length - 1;
@@ -734,11 +731,11 @@ async function handleRequest(request) {
         const currentUser = getAuthUser(request);
         const todayStr = new Date().toISOString().split('T')[0];
         let todayVoteCount = 0;
-        let votedCandidateIds = [];
+        let votedCandidateCounts = {};
         if (currentUser) {
           const myVotes = findAll('election_votes', { user_id: currentUser.id });
-          votedCandidateIds = myVotes.map(v => v.candidate_id);
           todayVoteCount = myVotes.filter(v => v.created_at.startsWith(todayStr)).length;
+          myVotes.forEach(v => { votedCandidateCounts[v.candidate_id] = (votedCandidateCounts[v.candidate_id] || 0) + 1; });
         }
         const elections = db.elections.map(e => {
           const candidates = db.election_candidates
@@ -750,7 +747,7 @@ async function handleRequest(request) {
           else if (now > new Date(e.end_date)) status = 'ended';
           return { ...e, status, candidates, total_votes: candidates.reduce((s, c) => s + c.vote_count, 0) };
         });
-        return json({ elections, today_votes: todayVoteCount, votes_remaining: Math.max(0, 3 - todayVoteCount), voted_candidate_ids: votedCandidateIds });
+        return json({ elections, today_votes: todayVoteCount, votes_remaining: Math.max(0, 3 - todayVoteCount), voted_candidate_counts: votedCandidateCounts });
       }
 
       // GET /api/translate?q=...&to=zh-CN
