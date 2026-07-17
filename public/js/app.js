@@ -837,6 +837,11 @@ function renderCommentItem(comment) {
               <i class="far fa-comment"></i> 回复
             </button>
           ` : ''}
+          ${state.user && state.user.role === 'admin' ? `
+            <button class="comment-action" style="color:#dc2626" onclick="adminDeleteComment(${comment.id})">
+              <i class="fas fa-trash"></i> 删除
+            </button>
+          ` : ''}
         </div>
         <div id="replyArea-${comment.id}" style="display:none;margin-top:8px">
           <div class="comment-input-area" style="padding:8px 0">
@@ -1358,6 +1363,21 @@ async function likeComment(commentId) {
     updateComment(state.comments);
     render();
   } catch (e) { toast(e.message, 'error'); }
+}
+
+async function adminDeleteComment(commentId) {
+  if (!confirm('确定删除这条评论吗？\n如果是楼中楼评论，其下所有回复也会被删除。')) return;
+  try {
+    const data = await API.request('/api/admin/comments/' + commentId, { method: 'DELETE' });
+    toast(data.message || '评论已删除', 'success');
+    // 重新加载帖子详情以刷新评论
+    if (state.currentPost) {
+      const commentData = await API.get('/api/posts/' + state.currentPost.id + '/comments');
+      state.comments = commentData.comments;
+      state.currentPost.comment_count = (state.currentPost.comment_count || 0) - (data.count || 1);
+    }
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 async function supportSuggestion(sugId) {

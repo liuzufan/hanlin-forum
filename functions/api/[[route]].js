@@ -996,6 +996,30 @@ async function handleRequest(request) {
         return json({ success: true });
       }
 
+      // DELETE /api/admin/comments/:id
+      if (m = path.match(/^\/api\/admin\/comments\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const commentId = parseInt(m[1]);
+        const comment = findById('comments', commentId);
+        if (!comment) return json({ error: '评论不存在' }, 404);
+        const db = getDB();
+        const postId = comment.post_id;
+        // 删除该评论的所有子回复
+        const replyIds = db.comments.filter(c => c.parent_id === commentId).map(c => c.id);
+        db.comment_likes = db.comment_likes.filter(cl => !replyIds.includes(cl.comment_id));
+        db.comments = db.comments.filter(c => c.parent_id !== commentId);
+        // 删除该评论的点赞
+        db.comment_likes = db.comment_likes.filter(cl => cl.comment_id !== commentId);
+        // 删除评论本身
+        db.comments = db.comments.filter(c => c.id !== commentId);
+        // 更新帖子评论数
+        const removedCount = 1 + replyIds.length;
+        increment('posts', postId, 'comment_count', -removedCount);
+        markDirty();
+        return json({ success: true, message: `已删除${removedCount}条评论` });
+      }
+
       // DELETE /api/admin/suggestions/:id
       if (m = path.match(/^\/api\/admin\/suggestions\/(\d+)$/)) {
         const { user, error } = requireAdmin(request);
