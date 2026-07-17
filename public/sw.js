@@ -1,9 +1,9 @@
-// 翰林校园论坛 Service Worker v17
-const CACHE_NAME = 'hanlin-forum-v17';
+// 翰林校园论坛 Service Worker v18
+const CACHE_NAME = 'hanlin-forum-v18';
 const STATIC_ASSETS = [
   '/',
-  '/css/style.css?v=17',
-  '/js/app.js?v=17',
+  '/css/style.css?v=18',
+  '/js/app.js?v=18',
   '/manifest.json'
 ];
 
@@ -32,6 +32,8 @@ self.addEventListener('fetch', function(event) {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
   if (url.pathname.startsWith('/api/')) return;
+  // 不缓存翻译API
+  if (url.hostname.includes('translate.googleapis.com') || url.hostname.includes('mymemory.translated.net')) return;
 
   if (event.request.mode === 'navigate') {
     event.respondWith(

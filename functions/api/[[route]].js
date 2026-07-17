@@ -551,6 +551,57 @@ async function handleRequest(request) {
         return json({ error: '未知操作' }, 400);
       }
 
+      // POST /api/admin/elections - 创建评选活动
+      if (path === '/api/admin/elections') {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const { title, description, start_date, end_date } = await getBody(request);
+        if (!title || !start_date || !end_date) return json({ error: '请填写完整' }, 400);
+        const election = insert('elections', {
+          title, description: description || '',
+          start_date, end_date,
+          status: 'active', created_at: new Date().toISOString(),
+          created_by: user.id,
+        });
+        return json({ election });
+      }
+
+      // POST /api/admin/elections/:id/candidates - 添加候选人
+      if (m = path.match(/^\/api\/admin\/elections\/(\d+)\/candidates$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const { name, bio, image, department } = await getBody(request);
+        if (!name) return json({ error: '请填写候选人名称' }, 400);
+        const candidate = insert('election_candidates', {
+          election_id: electionId, name, bio: bio || '',
+          image: image || '', department: department || '',
+          vote_count: 0, created_at: new Date().toISOString(),
+        });
+        return json({ candidate });
+      }
+
+      // POST /api/elections/:id/vote - 投票
+      if (m = path.match(/^\/api\/elections\/(\d+)\/vote$/)) {
+        const { user, error } = requireAuth(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const { candidate_id } = await getBody(request);
+        if (!candidate_id) return json({ error: '请选择候选人' }, 400);
+        const election = findById('elections', electionId);
+        if (!election) return json({ error: '评选活动不存在' }, 404);
+        const now = new Date();
+        if (now < new Date(election.start_date)) return json({ error: '评选尚未开始' }, 400);
+        if (now > new Date(election.end_date)) return json({ error: '评选已结束' }, 400);
+        const existing = findOne('election_votes', { election_id: electionId, user_id: user.id });
+        if (existing) return json({ error: '您已投过票' }, 400);
+        const candidate = findById('election_candidates', candidate_id);
+        if (!candidate || candidate.election_id !== electionId) return json({ error: '候选人不存在' }, 404);
+        insert('election_votes', { election_id: electionId, candidate_id, user_id: user.id, created_at: new Date().toISOString() });
+        increment('election_candidates', candidate_id, 'vote_count', 1);
+        return json({ success: true, message: '投票成功' });
+      }
+
       // PUT /api/admin/posts/:id (toggle hot/pin)
       // This goes in the PUT section - add before "PUT /api/users/profile"
 
@@ -669,6 +720,28 @@ async function handleRequest(request) {
             };
           });
         return json({ announcements });
+      }
+
+      // GET /api/elections - 获取所有评选活动
+      if (path === '/api/elections') {
+        const db = getDB();
+        const currentUser = getAuthUser(request);
+        const elections = db.elections.map(e => {
+          const candidates = db.election_candidates
+            .filter(c => c.election_id === e.id)
+            .sort((a, b) => b.vote_count - a.vote_count);
+          let voted = null;
+          if (currentUser) {
+            const vote = findOne('election_votes', { election_id: e.id, user_id: currentUser.id });
+            voted = vote ? vote.candidate_id : null;
+          }
+          const now = new Date();
+          let status = 'active';
+          if (now < new Date(e.start_date)) status = 'upcoming';
+          else if (now > new Date(e.end_date)) status = 'ended';
+          return { ...e, status, candidates, voted, total_votes: candidates.reduce((s, c) => s + c.vote_count, 0) };
+        });
+        return json({ elections });
       }
 
       // GET /api/stats
@@ -1040,6 +1113,31 @@ async function handleRequest(request) {
         if (!ann) return json({ error: '公告不存在' }, 404);
         remove('announcements', annId);
         return json({ success: true, message: '公告已删除' });
+      }
+
+      // DELETE /api/admin/elections/:id - 删除评选活动
+      if (m = path.match(/^\/api\/admin\/elections\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const db = getDB();
+        db.election_votes = db.election_votes.filter(v => v.election_id !== electionId);
+        db.election_candidates = db.election_candidates.filter(c => c.election_id !== electionId);
+        db.elections = db.elections.filter(e => e.id !== electionId);
+        markDirty();
+        return json({ success: true, message: '评选活动已删除' });
+      }
+
+      // DELETE /api/admin/candidates/:id - 删除候选人
+      if (m = path.match(/^\/api\/admin\/candidates\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const candidateId = parseInt(m[1]);
+        const db = getDB();
+        db.election_votes = db.election_votes.filter(v => v.candidate_id !== candidateId);
+        db.election_candidates = db.election_candidates.filter(c => c.id !== candidateId);
+        markDirty();
+        return json({ success: true, message: '候选人已删除' });
       }
     }
 

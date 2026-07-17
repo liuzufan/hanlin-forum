@@ -13,6 +13,7 @@ const state = {
   currentPost: null,
   comments: [],
   suggestions: [],
+  elections: [],
   notifications: [],
   unreadCount: 0,
   searchQuery: '',
@@ -282,6 +283,9 @@ async function renderShell(content) {
       <button class="mobile-nav-item ${getRoute() === '/suggestions' ? 'active' : ''}" onclick="navigate('/suggestions')">
         <i class="fas fa-lightbulb nav-icon"></i><span>建议</span>
       </button>
+      <button class="mobile-nav-item ${getRoute() === '/elections' ? 'active' : ''}" onclick="navigate('/elections')">
+        <i class="fas fa-trophy nav-icon"></i><span>评选</span>
+      </button>
       <button class="mobile-nav-item ${getRoute().startsWith('/profile') ? 'active' : ''}" onclick="navigate('/profile/${state.user?.id || ''}')">
         <i class="fas fa-user nav-icon"></i><span>我的</span>
       </button>
@@ -302,6 +306,9 @@ function renderSidebar() {
     </div>
     <div class="nav-item ${route === '/suggestions' ? 'active' : ''}" onclick="navigate('/suggestions')">
       <i class="fas fa-lightbulb nav-icon"></i><span>建议反馈</span>
+    </div>
+    <div class="nav-item ${route === '/elections' ? 'active' : ''}" onclick="navigate('/elections')">
+      <i class="fas fa-trophy nav-icon"></i><span>评选活动</span>
     </div>
     ${state.user && state.user.role === 'admin' ? `
     <div class="nav-item ${route === '/admin' ? 'active' : ''}" onclick="navigate('/admin')" style="color:var(--c-burgundy);font-weight:700">
@@ -749,14 +756,19 @@ async function renderPostDetail(postId) {
       </div>
       <h1 class="post-detail-title">${escapeHtml(post.title)}</h1>
       <div class="post-detail-meta">
-        ${getAvatarHtml(author.nickname, author.avatar_color)}
+        <div style="cursor:pointer" onclick="navigate('/profile/${author.id}')">${getAvatarHtml(author.nickname, author.avatar_color)}</div>
         <div>
           <div style="font-weight:600;font-size:0.9rem">${escapeHtml(author.nickname)} <span style="color:var(--text-tertiary);font-weight:400;font-size:0.8rem">${escapeHtml(author.department || '')}</span></div>
           <div style="font-size:0.75rem;color:var(--text-tertiary)">${formatTime(post.created_at)} · ${post.views} 次浏览</div>
         </div>
         <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="navigate('/profile/${author.id}')">查看主页</button>
       </div>
-      <div class="post-detail-content">${escapeHtml(post.content)}</div>
+      <div class="post-detail-content" id="postContent-${post.id}">${escapeHtml(post.content)}</div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="translatePost(${post.id})" id="translateBtn-${post.id}">
+          <i class="fas fa-language"></i> 翻译
+        </button>
+      </div>
       ${post.tags && post.tags.length > 0 ? `
         <div class="post-tags" style="margin-top:16px">
           ${post.tags.map(t => `<span class="post-tag">#${escapeHtml(t)}</span>`).join('')}
@@ -819,7 +831,7 @@ function renderCommentItem(comment) {
   var roleTag = comment.author.role === 'teacher' ? '<span class="comment-role-tag teacher">老师</span>' : '<span class="comment-role-tag student">学生</span>';
   return `
     <div class="comment-item">
-      ${getAvatarHtml(author.nickname, author.avatar_color, 'sm')}
+      <div style="cursor:pointer;flex-shrink:0" onclick="navigate('/profile/${author.id}')">${getAvatarHtml(author.nickname, author.avatar_color, 'sm')}</div>
       <div class="comment-body">
         <div class="comment-header">
           <span class="comment-author">${escapeHtml(author.nickname)}</span>
@@ -1217,6 +1229,182 @@ async function submitSuggestion() {
   }
 }
 
+// ===== Render: Elections =====
+async function renderElectionsPage() {
+  if (!state.elections || state.elections.length === 0) {
+    try {
+      const data = await API.get('/api/elections');
+      state.elections = data.elections || [];
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  var isAdmin = state.user && state.user.role === 'admin';
+
+  return `
+    <div class="glass" style="padding:20px;margin-bottom:16px">
+      <h1 style="margin-bottom:8px"><i class="fas fa-trophy" style="color:var(--c-gold)"></i> 评选活动</h1>
+      <p style="color:var(--text-secondary);font-size:0.85rem">参与校园评选，为心中最佳的人选投票！</p>
+      ${isAdmin ? `
+        <button class="btn btn-primary" style="margin-top:12px" onclick="document.getElementById('electionForm').style.display='block'">
+          <i class="fas fa-plus"></i> 创建评选活动
+        </button>
+        <div id="electionForm" style="display:none;margin-top:16px;padding:16px;background:var(--bg-surface);border-radius:var(--radius)">
+          <div class="form-group">
+            <label class="form-label">评选标题（如：最佳教师评选）</label>
+            <input type="text" class="form-input" id="elecTitle" placeholder="输入评选标题">
+          </div>
+          <div class="form-group">
+            <label class="form-label">评选描述</label>
+            <textarea class="form-input" id="elecDesc" rows="3" placeholder="评选说明"></textarea>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">开始时间</label>
+              <input type="datetime-local" class="form-input" id="elecStart">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">结束时间</label>
+              <input type="datetime-local" class="form-input" id="elecEnd">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="createElection()"><i class="fas fa-check"></i> 创建</button>
+          <button class="btn btn-ghost" onclick="document.getElementById('electionForm').style.display='none'">取消</button>
+        </div>
+      ` : ''}
+    </div>
+    ${state.elections.length === 0 ? '<div class="empty-state glass"><p>暂无评选活动</p></div>' : state.elections.map(e => renderElectionCard(e, isAdmin)).join('')}
+  `;
+}
+
+function renderElectionCard(election, isAdmin) {
+  var statusColors = { upcoming: '#3b82f6', active: '#22c55e', ended: '#94a3b8' };
+  var statusLabels = { upcoming: '未开始', active: '进行中', ended: '已结束' };
+  return `
+    <div class="glass" style="padding:20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <h2 style="font-size:1.1rem">${escapeHtml(election.title)}</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="padding:3px 10px;border-radius:12px;font-size:0.75rem;color:white;background:${statusColors[election.status]}">${statusLabels[election.status]}</span>
+          ${isAdmin ? `<button class="admin-delete-btn" onclick="deleteElection(${election.id})" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+        </div>
+      </div>
+      ${election.description ? `<p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:8px">${escapeHtml(election.description)}</p>` : ''}
+      <p style="font-size:0.75rem;color:var(--text-tertiary);margin-bottom:12px">
+        <i class="far fa-clock"></i> ${formatTime(election.start_date)} ~ ${formatTime(election.end_date)} · 共 ${election.total_votes} 票
+      </p>
+      <div style="display:grid;gap:12px">
+        ${election.candidates.map(c => renderCandidate(c, election, isAdmin)).join('')}
+      </div>
+      ${isAdmin && election.status !== 'ended' ? `
+        <button class="btn btn-ghost btn-sm" style="margin-top:12px" onclick="document.getElementById('candForm-${election.id}').style.display='block'">
+          <i class="fas fa-user-plus"></i> 添加候选人
+        </button>
+        <div id="candForm-${election.id}" style="display:none;margin-top:12px;padding:12px;background:var(--bg-surface);border-radius:var(--radius)">
+          <input type="text" class="form-input" id="candName-${election.id}" placeholder="候选人名称" style="margin-bottom:8px">
+          <input type="text" class="form-input" id="candDept-${election.id}" placeholder="学部/部门" style="margin-bottom:8px">
+          <input type="text" class="form-input" id="candImg-${election.id}" placeholder="照片URL（可选）" style="margin-bottom:8px">
+          <textarea class="form-input" id="candBio-${election.id}" rows="2" placeholder="简介/拉票宣言" style="margin-bottom:8px"></textarea>
+          <button class="btn btn-primary btn-sm" onclick="addCandidate(${election.id})"><i class="fas fa-check"></i> 添加</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('candForm-${election.id}').style.display='none'">取消</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderCandidate(candidate, election, isAdmin) {
+  var percent = election.total_votes > 0 ? Math.round(candidate.vote_count / election.total_votes * 100) : 0;
+  var hasVoted = election.voted !== null;
+  var votedThis = election.voted === candidate.id;
+  return `
+    <div style="display:flex;gap:12px;align-items:center;padding:12px;background:var(--bg-surface);border-radius:var(--radius);${votedThis ? 'border:2px solid var(--c-gold)' : ''}">
+      ${candidate.image ? `<img src="${escapeHtml(candidate.image)}" style="width:48px;height:48px;border-radius:50%;object-fit:cover" onerror="this.style.display='none'">` : `<div style="width:48px;height:48px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.2rem">${escapeHtml(candidate.name.charAt(0))}</div>`}
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div>
+            <span style="font-weight:700">${escapeHtml(candidate.name)}</span>
+            ${candidate.department ? `<span style="font-size:0.75rem;color:var(--text-tertiary);margin-left:6px">${escapeHtml(candidate.department)}</span>` : ''}
+            ${votedThis ? '<span style="font-size:0.7rem;color:var(--c-gold);margin-left:6px"><i class="fas fa-check-circle"></i> 已投</span>' : ''}
+          </div>
+          ${isAdmin ? `<button class="admin-delete-btn" onclick="deleteCandidate(${candidate.id})" title="删除候选人"><i class="fas fa-times"></i></button>` : ''}
+        </div>
+        ${candidate.bio ? `<p style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px">${escapeHtml(candidate.bio)}</p>` : ''}
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:8px;background:var(--border-color);border-radius:4px;overflow:hidden">
+            <div style="width:${percent}%;height:100%;background:linear-gradient(90deg,var(--c-burgundy),var(--c-gold));border-radius:4px;transition:width 0.3s"></div>
+          </div>
+          <span style="font-size:0.78rem;color:var(--text-secondary);min-width:50px;text-align:right">${candidate.vote_count}票 (${percent}%)</span>
+        </div>
+      </div>
+      ${election.status === 'active' && !hasVoted && state.user ? `
+        <button class="btn btn-primary btn-sm" onclick="voteCandidate(${election.id}, ${candidate.id})">
+          <i class="fas fa-thumbs-up"></i> 投票
+        </button>
+      ` : election.status === 'active' && hasVoted ? `
+        <span style="font-size:0.75rem;color:var(--text-tertiary)">${votedThis ? '已投票' : '已投他人'}</span>
+      ` : ''}
+    </div>
+  `;
+}
+
+async function createElection() {
+  var title = $('#elecTitle').value.trim();
+  var desc = $('#elecDesc').value.trim();
+  var start = $('#elecStart').value;
+  var end = $('#elecEnd').value;
+  if (!title || !start || !end) { toast('请填写完整', 'error'); return; }
+  try {
+    await API.post('/api/admin/elections', { title, description: desc, start_date: new Date(start).toISOString(), end_date: new Date(end).toISOString() });
+    toast('评选活动创建成功', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('创建失败: ' + e.message, 'error'); }
+}
+
+async function addCandidate(electionId) {
+  var name = $('#candName-' + electionId).value.trim();
+  var dept = $('#candDept-' + electionId).value.trim();
+  var img = $('#candImg-' + electionId).value.trim();
+  var bio = $('#candBio-' + electionId).value.trim();
+  if (!name) { toast('请填写候选人名称', 'error'); return; }
+  try {
+    await API.post('/api/admin/elections/' + electionId + '/candidates', { name, department: dept, image: img, bio });
+    toast('候选人添加成功', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('添加失败: ' + e.message, 'error'); }
+}
+
+async function voteCandidate(electionId, candidateId) {
+  if (!confirm('确定投票给该候选人吗？每人只能投一票，投后不可更改。')) return;
+  try {
+    await API.post('/api/elections/' + electionId + '/vote', { candidate_id: candidateId });
+    toast('投票成功！', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('投票失败: ' + e.message, 'error'); }
+}
+
+async function deleteElection(electionId) {
+  if (!confirm('确定删除这个评选活动吗？所有候选人数据和投票记录都将被删除。')) return;
+  try {
+    await API.request('/api/admin/elections/' + electionId, { method: 'DELETE' });
+    toast('评选活动已删除', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function deleteCandidate(candidateId) {
+  if (!confirm('确定删除该候选人吗？')) return;
+  try {
+    await API.request('/api/admin/candidates/' + candidateId, { method: 'DELETE' });
+    toast('候选人已删除', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
 // ===== Render: Notifications =====
 async function renderNotifications() {
   if (!state.user) { navigate('/login'); return ''; }
@@ -1473,6 +1661,76 @@ function copyLink(url) {
   });
 }
 
+var translatedPosts = {};
+
+async function translatePost(postId) {
+  var contentEl = document.getElementById('postContent-' + postId);
+  var btn = document.getElementById('translateBtn-' + postId);
+  if (!contentEl || !btn) return;
+
+  // 已翻译则切换回原文
+  if (translatedPosts[postId]) {
+    contentEl.innerHTML = escapeHtml(translatedPosts[postId].original);
+    btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+    delete translatedPosts[postId];
+    return;
+  }
+
+  // 检测是否包含中文，如果主要是中文则提示无需翻译
+  var text = contentEl.textContent;
+  var chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+  if (chineseChars > text.length * 0.5) {
+    toast('该内容主要是中文，无需翻译', 'info');
+    return;
+  }
+
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 翻译中...';
+  btn.disabled = true;
+
+  try {
+    // 使用 Google Translate 免费 API
+    var apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=' + encodeURIComponent(text);
+    var res = await fetch(apiUrl);
+    var data = await res.json();
+    var translated = '';
+    if (data && data[0]) {
+      for (var i = 0; i < data[0].length; i++) {
+        if (data[0][i] && data[0][i][0]) translated += data[0][i][0];
+      }
+    }
+    if (translated) {
+      translatedPosts[postId] = { original: text, translated: translated };
+      contentEl.innerHTML = escapeHtml(translated) + '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);font-size:0.78rem;color:var(--text-tertiary)"><i class="fas fa-info-circle"></i> 以上为机器翻译，<a style="color:var(--c-teal);cursor:pointer" onclick="translatePost(' + postId + ')">查看原文</a></div>';
+      btn.innerHTML = '<i class="fas fa-undo"></i> 原文';
+      toast('翻译完成', 'success');
+    } else {
+      toast('翻译失败，请稍后重试', 'error');
+      btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+    }
+  } catch (e) {
+    // 降级到 MyMemory 翻译 API
+    try {
+      var apiUrl2 = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) + '&langpair=en|zh-CN';
+      var res2 = await fetch(apiUrl2);
+      var data2 = await res2.json();
+      if (data2 && data2.responseData && data2.responseData.translatedText) {
+        var translated2 = data2.responseData.translatedText;
+        translatedPosts[postId] = { original: text, translated: translated2 };
+        contentEl.innerHTML = escapeHtml(translated2) + '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);font-size:0.78rem;color:var(--text-tertiary)"><i class="fas fa-info-circle"></i> 以上为机器翻译，<a style="color:var(--c-teal);cursor:pointer" onclick="translatePost(' + postId + ')">查看原文</a></div>';
+        btn.innerHTML = '<i class="fas fa-undo"></i> 原文';
+        toast('翻译完成', 'success');
+      } else {
+        toast('翻译服务暂时不可用', 'error');
+        btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+      }
+    } catch (e2) {
+      toast('翻译失败: ' + e.message, 'error');
+      btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+    }
+  }
+  btn.disabled = false;
+}
+
 function doSearch(query) {
   state.searchQuery = query.trim();
   navigate(`/search?q=${encodeURIComponent(state.searchQuery)}`);
@@ -1536,6 +1794,8 @@ async function render() {
     content = await renderFavorites();
   } else if (route === '/suggestions') {
     content = await renderSuggestionsPage();
+  } else if (route === '/elections' || route.startsWith('/elections/')) {
+    content = await renderElectionsPage();
   } else if (route === '/create-suggestion') {
     content = renderCreateSuggestion();
   } else if (route === '/notifications') {
