@@ -1318,7 +1318,15 @@ function renderElectionCard(election, isAdmin) {
         <div id="candForm-${election.id}" style="display:none;margin-top:12px;padding:12px;background:var(--bg-surface);border-radius:var(--radius)">
           <input type="text" class="form-input" id="candName-${election.id}" placeholder="候选人名称" style="margin-bottom:8px">
           <input type="text" class="form-input" id="candDept-${election.id}" placeholder="学部/部门" style="margin-bottom:8px">
-          <input type="text" class="form-input" id="candImg-${election.id}" placeholder="照片URL（可选）" style="margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:var(--radius);cursor:pointer;margin-bottom:8px;border:1px dashed var(--border-color)">
+            <i class="fas fa-camera" style="color:var(--c-teal)"></i>
+            <span id="candImgLabel-${election.id}" style="font-size:0.85rem;color:var(--text-secondary)">上传候选人照片</span>
+            <input type="file" accept="image/*" style="display:none" onchange="handleCandidateImage(this, ${election.id})">
+          </label>
+          <div id="candImgPreview-${election.id}" style="display:none;margin-bottom:8px">
+            <img id="candImgPreviewImg-${election.id}" style="max-width:80px;max-height:80px;border-radius:8px;vertical-align:middle">
+            <button class="btn btn-ghost btn-sm" onclick="clearCandidateImage(${election.id})"><i class="fas fa-times"></i></button>
+          </div>
           <textarea class="form-input" id="candBio-${election.id}" rows="2" placeholder="简介/拉票宣言" style="margin-bottom:8px"></textarea>
           <button class="btn btn-primary btn-sm" onclick="addCandidate(${election.id})"><i class="fas fa-check"></i> 添加</button>
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('candForm-${election.id}').style.display='none'">取消</button>
@@ -1377,15 +1385,76 @@ async function createElection() {
   } catch (e) { toast('创建失败: ' + e.message, 'error'); }
 }
 
+var candidateImages = {};
+
+function handleCandidateImage(input, electionId) {
+  var file = input.files[0];
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) { toast('图片不能超过8MB', 'error'); input.value = ''; return; }
+  var label = document.getElementById('candImgLabel-' + electionId);
+  if (label) label.textContent = '压缩中...';
+  compressImage(file, 400, 0.75).then(function(dataUrl) {
+    candidateImages[electionId] = dataUrl;
+    var preview = document.getElementById('candImgPreview-' + electionId);
+    var img = document.getElementById('candImgPreviewImg-' + electionId);
+    if (preview && img) {
+      img.src = dataUrl;
+      preview.style.display = 'block';
+    }
+    if (label) label.textContent = '已选择照片 (' + Math.round(dataUrl.length / 1024) + 'KB)';
+  }).catch(function(err) {
+    toast('图片处理失败: ' + err.message, 'error');
+    if (label) label.textContent = '上传候选人照片';
+  });
+}
+
+function clearCandidateImage(electionId) {
+  delete candidateImages[electionId];
+  var preview = document.getElementById('candImgPreview-' + electionId);
+  var label = document.getElementById('candImgLabel-' + electionId);
+  if (preview) preview.style.display = 'none';
+  if (label) label.textContent = '上传候选人照片';
+}
+
+function compressImage(file, maxSize, quality) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var ctx = canvas.getContext('2d');
+        var w = img.width, h = img.height;
+        // 等比缩放到 maxSize 以内
+        if (w > maxSize || h > maxSize) {
+          if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+          else { w = Math.round(w * maxSize / h); h = maxSize; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+        // JPEG 压缩，quality 0-1
+        var dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl);
+      };
+      img.onerror = function() { reject(new Error('图片加载失败')); };
+      img.src = e.target.result;
+    };
+    reader.onerror = function() { reject(new Error('文件读取失败')); };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function addCandidate(electionId) {
   var name = $('#candName-' + electionId).value.trim();
   var dept = $('#candDept-' + electionId).value.trim();
-  var img = $('#candImg-' + electionId).value.trim();
+  var img = candidateImages[electionId] || '';
   var bio = $('#candBio-' + electionId).value.trim();
   if (!name) { toast('请填写候选人名称', 'error'); return; }
   try {
     await API.post('/api/admin/elections/' + electionId + '/candidates', { name, department: dept, image: img, bio });
     toast('候选人添加成功', 'success');
+    delete candidateImages[electionId];
     state.elections = [];
     render();
   } catch (e) { toast('添加失败: ' + e.message, 'error'); }
@@ -1519,10 +1588,9 @@ var commentImages = {};
 function handleCommentImage(input, key) {
   var file = input.files[0];
   if (!file) return;
-  if (file.size > 3 * 1024 * 1024) { toast('图片不能超过3MB', 'error'); input.value = ''; return; }
-  var reader = new FileReader();
-  reader.onload = function(e) {
-    commentImages[key] = e.target.result;
+  if (file.size > 8 * 1024 * 1024) { toast('图片不能超过8MB', 'error'); input.value = ''; return; }
+  compressImage(file, 600, 0.7).then(function(dataUrl) {
+    commentImages[key] = dataUrl;
     var previewEl, imgEl;
     if (key === 'comment') {
       previewEl = document.getElementById('commentImagePreview');
@@ -1532,11 +1600,14 @@ function handleCommentImage(input, key) {
       imgEl = document.getElementById('replyImagePreviewImg-' + key.replace('reply-', ''));
     }
     if (previewEl && imgEl) {
-      imgEl.src = e.target.result;
+      imgEl.src = dataUrl;
       previewEl.style.display = 'block';
     }
-  };
-  reader.readAsDataURL(file);
+    toast('图片已压缩 (' + Math.round(dataUrl.length / 1024) + 'KB)', 'info');
+  }).catch(function(err) {
+    toast('图片处理失败: ' + err.message, 'error');
+    input.value = '';
+  });
 }
 
 function removeCommentImage(key) {
