@@ -32,7 +32,22 @@ const API = {
     if (state.token) headers['X-Auth-Token'] = state.token;
     try {
       const res = await fetch(API_BASE + url, { ...options, headers });
-      const data = await res.json();
+      // 检查响应类型，防止非 JSON 响应导致解析错误
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        // 服务器返回了非 JSON（可能是 HTML 错误页面）
+        if (res.status === 405) throw new Error('服务器暂时不可用，请稍后重试');
+        if (!res.ok) throw new Error('请求失败 (' + res.status + ')');
+        throw new Error('服务器响应格式错误，请刷新页面重试');
+      }
+      const text = await res.text();
+      if (!text) throw new Error('服务器返回空响应，请稍后重试');
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('服务器响应解析失败，请稍后重试');
+      }
       if (!res.ok) throw new Error(data.error || '请求失败');
       return data;
     } catch (e) {
@@ -43,6 +58,10 @@ const API = {
         if (!window.location.hash.startsWith('#/login')) {
           navigate('/login');
         }
+      }
+      // 网络错误
+      if (e.name === 'TypeError' && e.message.includes('fetch')) {
+        throw new Error('网络连接失败，请检查网络后重试');
       }
       throw e;
     }
