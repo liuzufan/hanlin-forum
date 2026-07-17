@@ -1637,9 +1637,19 @@ function renderAdminDashboard(stats) {
 function renderAdminUsers(users) {
   if (!users.length) return '<div class="empty-state"><p>暂无用户数据</p></div>';
   return `
-    <p style="margin-bottom:12px;color:var(--text-secondary);font-size:0.85rem">共 ${users.length} 个用户</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <p style="color:var(--text-secondary);font-size:0.85rem">共 ${users.length} 个用户 · 已选 <span id="userSelCount">${adminSelectedUsers.size}</span> 个</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-ghost" onclick="adminUserSelectAll()"><i class="fas fa-check-square"></i> 全选</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminUserClearSelection()"><i class="fas fa-square"></i> 取消全选</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminUserBatchAction('ban')"><i class="fas fa-ban"></i> 批量禁言</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminUserBatchAction('unban')"><i class="fas fa-unlock"></i> 批量解禁</button>
+        <button class="btn btn-sm" style="background:#dc2626;color:white" onclick="adminUserBatchAction('delete')"><i class="fas fa-trash"></i> 批量删除</button>
+      </div>
+    </div>
     ${users.map(u => `
-      <div class="admin-user-row">
+      <div class="admin-user-row" style="${adminSelectedUsers.has(u.id) ? 'background:rgba(201,162,39,0.1)' : ''}">
+        <input type="checkbox" ${adminSelectedUsers.has(u.id) ? 'checked' : ''} ${u.role === 'admin' ? 'disabled' : ''} onchange="adminUserToggleSelect(${u.id})" style="width:18px;height:18px;cursor:pointer;flex-shrink:0">
         ${getAvatarHtml(u.nickname, u.avatar_color, 'sm')}
         <div class="admin-user-info">
           <div class="admin-user-name">
@@ -1660,6 +1670,41 @@ function renderAdminUsers(users) {
       </div>
     `).join('')}
   `;
+}
+
+var adminSelectedUsers = new Set();
+
+function adminUserToggleSelect(userId) {
+  if (adminSelectedUsers.has(userId)) adminSelectedUsers.delete(userId);
+  else adminSelectedUsers.add(userId);
+  render();
+}
+
+function adminUserSelectAll() {
+  const users = state.adminData?.users || [];
+  users.forEach(u => { if (u.role !== 'admin') adminSelectedUsers.add(u.id); });
+  render();
+}
+
+function adminUserClearSelection() {
+  adminSelectedUsers.clear();
+  render();
+}
+
+async function adminUserBatchAction(action) {
+  if (adminSelectedUsers.size === 0) { toast('请先选择用户', 'error'); return; }
+  if (action === 'delete') {
+    if (!confirm('确定要删除选中的 ' + adminSelectedUsers.size + ' 个用户吗？\n该用户的所有帖子和评论都将被删除！')) return;
+  }
+  const user_ids = Array.from(adminSelectedUsers);
+  try {
+    const data = await API.post('/api/admin/users/batch', { action, user_ids });
+    toast(data.message || '操作成功', 'success');
+    adminSelectedUsers.clear();
+    render();
+  } catch (e) {
+    toast('操作失败: ' + e.message, 'error');
+  }
 }
 
 var adminSelectedPosts = new Set();
@@ -1828,7 +1873,10 @@ function renderAdminAnnounceForm() {
       <h3 style="margin-top:24px;margin-bottom:12px">历史公告</h3>
       ${announcements_global.map(a => `
         <div class="glass" style="padding:14px;margin-bottom:8px">
-          <div style="font-weight:700;font-size:0.88rem">${escapeHtml(a.title)}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="font-weight:700;font-size:0.88rem">${escapeHtml(a.title)}</div>
+            <button class="admin-delete-btn" onclick="adminDeleteAnnouncement(${a.id})" title="删除公告"><i class="fas fa-trash"></i></button>
+          </div>
           <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:4px">${escapeHtml(a.content)}</div>
           <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:4px">${formatTime(a.created_at)}</div>
         </div>
@@ -1857,7 +1905,14 @@ async function renderAdminSuggestions() {
   };
 
   return `
-    <p style="margin-bottom:12px;color:var(--text-secondary);font-size:0.85rem">共 ${suggestions.length} 条建议反馈</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <p style="color:var(--text-secondary);font-size:0.85rem">共 ${suggestions.length} 条建议 · 已选 <span id="sugSelCount">${adminSelectedSuggestions.size}</span> 条</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-ghost" onclick="adminSugSelectAll()"><i class="fas fa-check-square"></i> 全选</button>
+        <button class="btn btn-sm btn-ghost" onclick="adminSugClearSelection()"><i class="fas fa-square"></i> 取消全选</button>
+        <button class="btn btn-sm" style="background:#dc2626;color:white" onclick="adminSugBatchDelete()"><i class="fas fa-trash"></i> 批量删除</button>
+      </div>
+    </div>
     ${suggestions.map(s => {
       const st = statusLabels[s.status] || statusLabels.pending;
       return `
@@ -1871,6 +1926,10 @@ async function renderAdminSuggestions() {
               </div>
             </div>
             <span style="padding:3px 10px;border-radius:12px;font-size:0.75rem;color:white;background:${st.color}">${st.label}</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <input type="checkbox" ${adminSelectedSuggestions.has(s.id) ? 'checked' : ''} onchange="adminSugToggleSelect(${s.id})" style="width:16px;height:16px;cursor:pointer">
+              <button class="admin-delete-btn" onclick="adminDeleteSuggestion(${s.id})" title="删除"><i class="fas fa-trash"></i></button>
+            </div>
           </div>
           <h4 style="font-size:0.95rem;margin-bottom:6px">${escapeHtml(s.title)}</h4>
           <p style="font-size:0.82rem;color:var(--text-secondary);line-height:1.6;margin-bottom:8px">${escapeHtml(s.content)}</p>
@@ -1914,6 +1973,46 @@ async function adminUpdateSuggestion(sugId) {
   } catch (e) {
     toast('更新失败: ' + e.message, 'error');
   }
+}
+
+var adminSelectedSuggestions = new Set();
+
+function adminSugToggleSelect(sugId) {
+  if (adminSelectedSuggestions.has(sugId)) adminSelectedSuggestions.delete(sugId);
+  else adminSelectedSuggestions.add(sugId);
+  render();
+}
+
+function adminSugSelectAll() {
+  const sugs = state.adminData?.suggestions || [];
+  sugs.forEach(s => adminSelectedSuggestions.add(s.id));
+  render();
+}
+
+function adminSugClearSelection() {
+  adminSelectedSuggestions.clear();
+  render();
+}
+
+async function adminDeleteSuggestion(sugId) {
+  if (!confirm('确定删除这条建议吗？')) return;
+  try {
+    await API.request('/api/admin/suggestions/' + sugId, { method: 'DELETE' });
+    toast('建议已删除', 'success');
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function adminSugBatchDelete() {
+  if (adminSelectedSuggestions.size === 0) { toast('请先选择建议', 'error'); return; }
+  if (!confirm('确定删除选中的 ' + adminSelectedSuggestions.size + ' 条建议吗？')) return;
+  const suggestion_ids = Array.from(adminSelectedSuggestions);
+  try {
+    const data = await API.post('/api/admin/suggestions/batch', { action: 'delete', suggestion_ids });
+    toast(data.message || '删除成功', 'success');
+    adminSelectedSuggestions.clear();
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 function renderAdminPollForm(posts) {
@@ -2099,6 +2198,15 @@ async function createAnnouncement() {
   } catch (e) {
     toast('发布失败: ' + e.message, 'error');
   }
+}
+
+async function adminDeleteAnnouncement(annId) {
+  if (!confirm('确定删除这条公告吗？')) return;
+  try {
+    await API.request('/api/admin/announcements/' + annId, { method: 'DELETE' });
+    toast('公告已删除', 'success');
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 async function adminCreatePoll() {

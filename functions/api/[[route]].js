@@ -528,6 +528,26 @@ async function handleRequest(request) {
         return json({ error: '未知操作' }, 400);
       }
 
+      // POST /api/admin/suggestions/batch
+      if (path === '/api/admin/suggestions/batch') {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const { action, suggestion_ids } = await getBody(request);
+        if (!action || !Array.isArray(suggestion_ids) || suggestion_ids.length === 0) return json({ error: '参数不完整' }, 400);
+        let count = 0;
+        if (action === 'delete') {
+          for (const sid of suggestion_ids) {
+            const sugId = parseInt(sid);
+            if (findById('suggestions', sugId)) {
+              remove('suggestions', sugId);
+              count++;
+            }
+          }
+          return json({ success: true, count, message: `已删除${count}条建议` });
+        }
+        return json({ error: '未知操作' }, 400);
+      }
+
       // PUT /api/admin/posts/:id (toggle hot/pin)
       // This goes in the PUT section - add before "PUT /api/users/profile"
 
@@ -971,6 +991,28 @@ async function handleRequest(request) {
         if (!existing) return json({ error: '该用户未被禁言' }, 404);
         remove('banned_users', { user_id: userId });
         return json({ success: true });
+      }
+
+      // DELETE /api/admin/suggestions/:id
+      if (m = path.match(/^\/api\/admin\/suggestions\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const sugId = parseInt(m[1]);
+        const sug = findById('suggestions', sugId);
+        if (!sug) return json({ error: '建议不存在' }, 404);
+        remove('suggestions', sugId);
+        return json({ success: true, message: '建议已删除' });
+      }
+
+      // DELETE /api/admin/announcements/:id
+      if (m = path.match(/^\/api\/admin\/announcements\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const annId = parseInt(m[1]);
+        const ann = findById('announcements', annId);
+        if (!ann) return json({ error: '公告不存在' }, 404);
+        remove('announcements', annId);
+        return json({ success: true, message: '公告已删除' });
       }
     }
 

@@ -18,7 +18,7 @@ function useSupabase() { return !!(getSupabaseUrl() && getSupabaseKey()); }
 
 const BUCKET_NAME = 'forum-data';
 const FILE_NAME = 'forum_db.json';
-const KV_KEY = 'forum_db_v5';
+const KV_KEY = 'forum_db_v6';
 
 function getDefaultData() {
   return {
@@ -260,12 +260,6 @@ const SAMPLE_COMMENTS = [
 ];
 
 const SAMPLE_SUGGESTIONS = [
-  { user_idx: 1, title: '建议延长图书馆开放时间至晚上10点', content: '期末考试期间，很多同学希望能在图书馆自习到更晚。目前9点闭馆，建议延长至10点，方便同学们复习。', category: 'campus', priority: 2 },
-  { user_idx: 2, title: '建议增加食堂菜品种类，特别是素食选项', content: '目前食堂素食种类较少，建议增加素菜窗口，满足不同饮食习惯同学的需求。', category: 'canteen', priority: 1 },
-  { user_idx: 3, title: '建议在教学楼增设饮水机', content: 'B栋教学楼目前只有一楼有饮水机，三楼四楼的同学接水不方便，建议每层都增设。', category: 'facility', priority: 2 },
-  { user_idx: 4, title: '建议开设心理健康咨询预约线上通道', content: '目前心理咨询需要线下预约，很多同学觉得不好意思。建议开通线上匿名预约通道，保护隐私。', category: 'welfare', priority: 3 },
-  { user_idx: 5, title: '建议校园WiFi覆盖操场区域', content: '操场区域目前没有WiFi信号，体育课用手机查资料不方便，建议增加AP覆盖。', category: 'facility', priority: 1 },
-  { user_idx: 6, title: '建议举办跳蚤市场活动', content: '毕业季很多同学有闲置物品，建议学校组织跳蚤市场，既环保又能促进交流。', category: 'activity', priority: 1 },
 ];
 
 const SAMPLE_ANNOUNCEMENTS = [
