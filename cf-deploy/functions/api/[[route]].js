@@ -468,6 +468,66 @@ async function handleRequest(request) {
         return json({ error: '未知操作' }, 400);
       }
 
+      // POST /api/admin/users/batch
+      if (path === '/api/admin/users/batch') {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const { action, user_ids } = await getBody(request);
+        if (!action || !Array.isArray(user_ids) || user_ids.length === 0) return json({ error: '参数不完整' }, 400);
+        const db = getDB();
+        let count = 0;
+        if (action === 'delete') {
+          for (const uid of user_ids) {
+            const userId = parseInt(uid);
+            if (userId === user.id) continue;
+            const targetUser = findById('users', userId);
+            if (!targetUser || targetUser.role === 'admin') continue;
+            const userPostIds = db.posts.filter(p => p.user_id === userId).map(p => p.id);
+            for (const pid of userPostIds) {
+              const commentIds = db.comments.filter(c => c.post_id === pid).map(c => c.id);
+              const pollIds = db.post_polls.filter(p => p.post_id === pid).map(p => p.id);
+              db.poll_votes = db.poll_votes.filter(v => !pollIds.includes(v.poll_id));
+              db.post_polls = db.post_polls.filter(p => p.post_id !== pid);
+              db.comment_likes = db.comment_likes.filter(cl => !commentIds.includes(cl.comment_id));
+              db.comments = db.comments.filter(c => c.post_id !== pid);
+              db.post_likes = db.post_likes.filter(l => l.post_id !== pid);
+              db.post_votes = db.post_votes.filter(v => v.post_id !== pid);
+              db.favorites = db.favorites.filter(f => f.post_id !== pid);
+            }
+            db.posts = db.posts.filter(p => p.user_id !== userId);
+            db.comments = db.comments.filter(c => c.user_id !== userId);
+            db.post_likes = db.post_likes.filter(l => l.user_id !== userId);
+            db.post_votes = db.post_votes.filter(v => v.user_id !== userId);
+            db.comment_likes = db.comment_likes.filter(cl => cl.user_id !== userId);
+            db.favorites = db.favorites.filter(f => f.user_id !== userId);
+            db.suggestions = db.suggestions.filter(s => s.user_id !== userId);
+            db.notifications = db.notifications.filter(n => n.user_id !== userId);
+            db.banned_users = db.banned_users.filter(b => b.user_id !== userId);
+            db.users = db.users.filter(u => u.id !== userId);
+            count++;
+          }
+          markDirty();
+          return json({ success: true, count, message: `已删除${count}个用户` });
+        }
+        if (action === 'ban' || action === 'unban') {
+          for (const uid of user_ids) {
+            const userId = parseInt(uid);
+            const targetUser = findById('users', userId);
+            if (!targetUser || targetUser.role === 'admin') continue;
+            if (action === 'ban') {
+              if (!findOne('banned_users', { user_id: userId })) {
+                insert('banned_users', { user_id: userId, created_at: new Date().toISOString() });
+              }
+            } else {
+              remove('banned_users', { user_id: userId });
+            }
+            count++;
+          }
+          return json({ success: true, count, message: `${action === 'ban' ? '禁言' : '解禁'}${count}个用户` });
+        }
+        return json({ error: '未知操作' }, 400);
+      }
+
       // PUT /api/admin/posts/:id (toggle hot/pin)
       // This goes in the PUT section - add before "PUT /api/users/profile"
 

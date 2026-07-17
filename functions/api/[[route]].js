@@ -468,6 +468,66 @@ async function handleRequest(request) {
         return json({ error: '未知操作' }, 400);
       }
 
+      // POST /api/admin/users/batch
+      if (path === '/api/admin/users/batch') {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const { action, user_ids } = await getBody(request);
+        if (!action || !Array.isArray(user_ids) || user_ids.length === 0) return json({ error: '参数不完整' }, 400);
+        const db = getDB();
+        let count = 0;
+        if (action === 'delete') {
+          for (const uid of user_ids) {
+            const userId = parseInt(uid);
+            if (userId === user.id) continue;
+            const targetUser = findById('users', userId);
+            if (!targetUser || targetUser.role === 'admin') continue;
+            const userPostIds = db.posts.filter(p => p.user_id === userId).map(p => p.id);
+            for (const pid of userPostIds) {
+              const commentIds = db.comments.filter(c => c.post_id === pid).map(c => c.id);
+              const pollIds = db.post_polls.filter(p => p.post_id === pid).map(p => p.id);
+              db.poll_votes = db.poll_votes.filter(v => !pollIds.includes(v.poll_id));
+              db.post_polls = db.post_polls.filter(p => p.post_id !== pid);
+              db.comment_likes = db.comment_likes.filter(cl => !commentIds.includes(cl.comment_id));
+              db.comments = db.comments.filter(c => c.post_id !== pid);
+              db.post_likes = db.post_likes.filter(l => l.post_id !== pid);
+              db.post_votes = db.post_votes.filter(v => v.post_id !== pid);
+              db.favorites = db.favorites.filter(f => f.post_id !== pid);
+            }
+            db.posts = db.posts.filter(p => p.user_id !== userId);
+            db.comments = db.comments.filter(c => c.user_id !== userId);
+            db.post_likes = db.post_likes.filter(l => l.user_id !== userId);
+            db.post_votes = db.post_votes.filter(v => v.user_id !== userId);
+            db.comment_likes = db.comment_likes.filter(cl => cl.user_id !== userId);
+            db.favorites = db.favorites.filter(f => f.user_id !== userId);
+            db.suggestions = db.suggestions.filter(s => s.user_id !== userId);
+            db.notifications = db.notifications.filter(n => n.user_id !== userId);
+            db.banned_users = db.banned_users.filter(b => b.user_id !== userId);
+            db.users = db.users.filter(u => u.id !== userId);
+            count++;
+          }
+          markDirty();
+          return json({ success: true, count, message: `已删除${count}个用户` });
+        }
+        if (action === 'ban' || action === 'unban') {
+          for (const uid of user_ids) {
+            const userId = parseInt(uid);
+            const targetUser = findById('users', userId);
+            if (!targetUser || targetUser.role === 'admin') continue;
+            if (action === 'ban') {
+              if (!findOne('banned_users', { user_id: userId })) {
+                insert('banned_users', { user_id: userId, created_at: new Date().toISOString() });
+              }
+            } else {
+              remove('banned_users', { user_id: userId });
+            }
+            count++;
+          }
+          return json({ success: true, count, message: `${action === 'ban' ? '禁言' : '解禁'}${count}个用户` });
+        }
+        return json({ error: '未知操作' }, 400);
+      }
+
       // PUT /api/admin/posts/:id (toggle hot/pin)
       // This goes in the PUT section - add before "PUT /api/users/profile"
 
@@ -757,7 +817,7 @@ async function handleRequest(request) {
 
     // ===== PUT 路由 =====
     else if (method === 'PUT') {
-      // PUT /api/admin/posts/:id
+      // PUT /api/admin/posts/:id (toggle hot/pin + edit title/content)
       let putM;
       if (putM = path.match(/^\/api\/admin\/posts\/(\d+)$/)) {
         const { user, error } = requireAdmin(request);
@@ -765,10 +825,13 @@ async function handleRequest(request) {
         const postId = parseInt(putM[1]);
         const post = findById('posts', postId);
         if (!post) return json({ error: '帖子不存在' }, 404);
-        const { is_pinned, is_hot } = await getBody(request);
+        const { is_pinned, is_hot, title, content, category_id } = await getBody(request);
         const updates = {};
         if (is_pinned !== undefined) updates.is_pinned = is_pinned ? 1 : 0;
         if (is_hot !== undefined) updates.is_hot = is_hot ? 1 : 0;
+        if (title !== undefined && title.trim()) updates.title = title.trim();
+        if (content !== undefined) updates.content = content;
+        if (category_id !== undefined) updates.category_id = parseInt(category_id);
         update('posts', postId, updates);
         return json({ success: true, post: findById('posts', postId) });
       }
@@ -787,6 +850,23 @@ async function handleRequest(request) {
         if (priority !== undefined) updates.priority = priority;
         update('suggestions', sugId, updates);
         return json({ success: true, suggestion: findById('suggestions', sugId) });
+      }
+
+      // PUT /api/admin/users/:id
+      if (putM = path.match(/^\/api\/admin\/users\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const userId = parseInt(putM[1]);
+        const targetUser = findById('users', userId);
+        if (!targetUser) return json({ error: '用户不存在' }, 404);
+        const { nickname, bio, department, role } = await getBody(request);
+        const updates = {};
+        if (nickname !== undefined && nickname.trim()) updates.nickname = nickname.trim();
+        if (bio !== undefined) updates.bio = bio;
+        if (department !== undefined) updates.department = department;
+        if (role !== undefined && ['student', 'teacher'].includes(role)) updates.role = role;
+        update('users', userId, updates);
+        return json({ success: true, user: publicUser(findById('users', userId), 'admin') });
       }
 
       // PUT /api/users/profile
@@ -812,6 +892,42 @@ async function handleRequest(request) {
     // ===== DELETE 路由 =====
     else if (method === 'DELETE') {
       let m;
+
+      // DELETE /api/admin/users/:id
+      if (m = path.match(/^\/api\/admin\/users\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const userId = parseInt(m[1]);
+        if (userId === user.id) return json({ error: '不能删除自己' }, 400);
+        const targetUser = findById('users', userId);
+        if (!targetUser) return json({ error: '用户不存在' }, 404);
+        if (targetUser.role === 'admin') return json({ error: '不能删除管理员账号' }, 400);
+        const db = getDB();
+        // 删除用户的所有帖子和相关数据
+        const userPostIds = db.posts.filter(p => p.user_id === userId).map(p => p.id);
+        for (const pid of userPostIds) {
+          const commentIds = db.comments.filter(c => c.post_id === pid).map(c => c.id);
+          const pollIds = db.post_polls.filter(p => p.post_id === pid).map(p => p.id);
+          db.poll_votes = db.poll_votes.filter(v => !pollIds.includes(v.poll_id));
+          db.post_polls = db.post_polls.filter(p => p.post_id !== pid);
+          db.comment_likes = db.comment_likes.filter(cl => !commentIds.includes(cl.comment_id));
+          db.comments = db.comments.filter(c => c.post_id !== pid);
+          db.post_likes = db.post_likes.filter(l => l.post_id !== pid);
+          db.post_votes = db.post_votes.filter(v => v.post_id !== pid);
+          db.favorites = db.favorites.filter(f => f.post_id !== pid);
+        }
+        db.posts = db.posts.filter(p => p.user_id !== userId);
+        db.comments = db.comments.filter(c => c.user_id !== userId);
+        db.post_likes = db.post_likes.filter(l => l.user_id !== userId);
+        db.post_votes = db.post_votes.filter(v => v.user_id !== userId);
+        db.comment_likes = db.comment_likes.filter(cl => cl.user_id !== userId);
+        db.favorites = db.favorites.filter(f => f.user_id !== userId);
+        db.suggestions = db.suggestions.filter(s => s.user_id !== userId);
+        db.notifications = db.notifications.filter(n => n.user_id !== userId);
+        db.users = db.users.filter(u => u.id !== userId);
+        markDirty();
+        return json({ success: true, message: '用户及所有相关数据已删除' });
+      }
 
       // DELETE /api/admin/posts/:id
       if (m = path.match(/^\/api\/admin\/posts\/(\d+)$/)) {
