@@ -466,7 +466,9 @@ async function handleLogin() {
     const data = await API.post('/api/auth/login', { username, password });
     state.token = data.token;
     state.user = data.user;
+    state.isGuest = false;
     localStorage.setItem('token', data.token);
+    localStorage.removeItem('isGuest');
     toast('登录成功，欢迎回来！', 'success');
     navigate('/');
     await loadCategories();
@@ -496,7 +498,9 @@ async function handleRegister() {
     const data = await API.post('/api/auth/register', { nickname, username, password, department, role: role });
     state.token = data.token;
     state.user = data.user;
+    state.isGuest = false;
     localStorage.setItem('token', data.token);
+    localStorage.removeItem('isGuest');
     toast('注册成功，欢迎加入翰林论坛！', 'success');
     navigate('/');
     await loadCategories();
@@ -2023,9 +2027,24 @@ async function adminCreatePoll() {
 // ===== Init =====
 async function init() {
   if (state.token) {
-    await checkAuth();
+    const ok = await checkAuth();
+    if (ok) {
+      await loadCategories();
+      await loadNotifications();
+    } else {
+      // Token expired or invalid
+      state.token = null;
+      state.user = null;
+      localStorage.removeItem('token');
+      await loadCategories();
+      var route = getRoute();
+      if (!route.startsWith('/login') && !route.startsWith('/post/')) {
+        navigate('/login');
+      }
+    }
+  } else if (state.isGuest) {
+    // Guest mode - allow browsing
     await loadCategories();
-    await loadNotifications();
   } else {
     await loadCategories();
     // Allow viewing shared post links without login
