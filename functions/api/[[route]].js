@@ -593,13 +593,19 @@ async function handleRequest(request) {
         const now = new Date();
         if (now < new Date(election.start_date)) return json({ error: '评选尚未开始' }, 400);
         if (now > new Date(election.end_date)) return json({ error: '评选已结束' }, 400);
-        const existing = findOne('election_votes', { election_id: electionId, user_id: user.id });
-        if (existing) return json({ error: '您已投过票' }, 400);
         const candidate = findById('election_candidates', candidate_id);
         if (!candidate || candidate.election_id !== electionId) return json({ error: '候选人不存在' }, 404);
+        // 每人每天3票限制（跨所有评选活动）
+        const todayStr = now.toISOString().split('T')[0];
+        const todayVotes = findAll('election_votes', { user_id: user.id }).filter(v => v.created_at.startsWith(todayStr));
+        if (todayVotes.length >= 3) return json({ error: '今日投票次数已达上限（3票），明天再来吧' }, 400);
+        // 同一候选人只能投一次
+        const votedSame = findOne('election_votes', { candidate_id, user_id: user.id });
+        if (votedSame) return json({ error: '您已为该候选人投过票' }, 400);
         insert('election_votes', { election_id: electionId, candidate_id, user_id: user.id, created_at: new Date().toISOString() });
         increment('election_candidates', candidate_id, 'vote_count', 1);
-        return json({ success: true, message: '投票成功' });
+        const remaining = 3 - todayVotes.length - 1;
+        return json({ success: true, message: '投票成功！今日剩余' + remaining + '票', remaining });
       }
 
       // PUT /api/admin/posts/:id (toggle hot/pin)
@@ -726,22 +732,25 @@ async function handleRequest(request) {
       if (path === '/api/elections') {
         const db = getDB();
         const currentUser = getAuthUser(request);
+        const todayStr = new Date().toISOString().split('T')[0];
+        let todayVoteCount = 0;
+        let votedCandidateIds = [];
+        if (currentUser) {
+          const myVotes = findAll('election_votes', { user_id: currentUser.id });
+          votedCandidateIds = myVotes.map(v => v.candidate_id);
+          todayVoteCount = myVotes.filter(v => v.created_at.startsWith(todayStr)).length;
+        }
         const elections = db.elections.map(e => {
           const candidates = db.election_candidates
             .filter(c => c.election_id === e.id)
             .sort((a, b) => b.vote_count - a.vote_count);
-          let voted = null;
-          if (currentUser) {
-            const vote = findOne('election_votes', { election_id: e.id, user_id: currentUser.id });
-            voted = vote ? vote.candidate_id : null;
-          }
           const now = new Date();
           let status = 'active';
           if (now < new Date(e.start_date)) status = 'upcoming';
           else if (now > new Date(e.end_date)) status = 'ended';
-          return { ...e, status, candidates, voted, total_votes: candidates.reduce((s, c) => s + c.vote_count, 0) };
+          return { ...e, status, candidates, total_votes: candidates.reduce((s, c) => s + c.vote_count, 0) };
         });
-        return json({ elections });
+        return json({ elections, today_votes: todayVoteCount, votes_remaining: Math.max(0, 3 - todayVoteCount), voted_candidate_ids: votedCandidateIds });
       }
 
       // GET /api/stats
