@@ -372,7 +372,7 @@ function seedData() {
 }
 
 // ===== Query Helpers =====
-function getDB() { return db || loadDB(); }
+function getDB() { return db; }
 function findById(t, id) { return db[t].find(r => r.id === id); }
 function findOne(t, c) { return db[t].find(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
 function findAll(t, c) { if (!c) return [...db[t]]; return db[t].filter(r => Object.entries(c).every(([k,v]) => r[k] === v)); }
