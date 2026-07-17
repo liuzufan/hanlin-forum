@@ -170,8 +170,9 @@ function requireAuth(action) {
     setTimeout(function() { navigate('/login'); }, 1000);
     return false;
   }
-  if (!state.user) {
-    navigate('/login');
+  if (!state.user || !state.token) {
+    toast('请先登录后再' + action, 'info');
+    setTimeout(function() { navigate('/login'); }, 1000);
     return false;
   }
   return true;
@@ -582,9 +583,14 @@ function renderPostList(posts, loading = false) {
 
 // ===== Render: Home Page =====
 async function renderHomePage(sort = 'latest', category = 'all', search = '') {
+  const querySig = sort + '|' + category + '|' + search;
+  if (state.lastHomeQuery !== querySig) {
+    state.homeDisplayLimit = 20;
+    state.lastHomeQuery = querySig;
+  }
   let posts = [];
   try {
-    const params = new URLSearchParams({ sort, limit: 20 });
+    const params = new URLSearchParams({ sort, limit: 100 });
     if (category && category !== 'all') params.set('category', category);
     if (search) params.set('search', search);
     const data = await API.get(`/api/posts?${params}`);
@@ -609,6 +615,8 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
   const pageTitle = search ? `搜索: "${search}"` : 
     (category !== 'all' ? (getCategoryBySlug(category)?.name || '分类') : '全部帖子');
 
+  const displayPosts = posts.slice(0, state.homeDisplayLimit || 20);
+
   return `
     <div class="flex items-center justify-between mb-4" style="gap:12px;flex-wrap:wrap">
       <h1 class="page-title" style="font-size:1.4rem">${escapeHtml(pageTitle)}</h1>
@@ -630,12 +638,22 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
         </div>
       </div>
     `).join('') : ''}
-    <div id="postList">${renderPostList(posts)}</div>
+    <div id="postList">${renderPostList(displayPosts)}</div>
+    ${posts.length > displayPosts.length ? `
+      <div style="text-align:center;margin-top:16px">
+        <button class="btn btn-ghost" onclick="loadMorePosts()"><i class="fas fa-chevron-down"></i> 加载更多</button>
+      </div>
+    ` : ''}
   `;
 }
 
 function changeSort(sort) {
   state.currentSort = sort;
+  render();
+}
+
+function loadMorePosts() {
+  state.homeDisplayLimit = (state.homeDisplayLimit || 20) + 20;
   render();
 }
 
@@ -1636,6 +1654,8 @@ function renderAdminUsers(users) {
             ? `<button class="admin-ban-btn" onclick="unbanUser(${u.id})"><i class="fas fa-unlock"></i> 解禁</button>`
             : `<button class="admin-ban-btn" onclick="banUser(${u.id})"><i class="fas fa-ban"></i> 禁言</button>`)
             : ''}
+          ${u.role !== 'admin' ? `<button class="admin-ban-btn" onclick="adminEditUser(${u.id})" title="编辑"><i class="fas fa-edit"></i></button>` : ''}
+          ${u.role !== 'admin' ? `<button class="admin-delete-btn" onclick="adminDeleteUser(${u.id}, '${escapeHtml(u.nickname).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>` : ''}
         </div>
       </div>
     `).join('')}
@@ -1672,6 +1692,7 @@ function renderAdminPosts(posts) {
         </div>
         <div class="admin-user-actions">
           <button class="admin-ban-btn" onclick="navigate('/post/${p.id}')"><i class="fas fa-eye"></i></button>
+          <button class="admin-ban-btn" onclick="adminEditPost(${p.id})" title="编辑帖子"><i class="fas fa-edit"></i></button>
           <button class="admin-ban-btn" onclick="adminToggleHot(${p.id})" title="切换热门"><i class="fas fa-fire"></i></button>
           <button class="admin-ban-btn" onclick="adminTogglePin(${p.id})" title="切换置顶"><i class="fas fa-thumbtack"></i></button>
           <button class="admin-delete-btn" onclick="adminDeletePost(${p.id}, '${escapeHtml(p.title).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i></button>
@@ -1738,6 +1759,56 @@ async function adminTogglePin(postId) {
     toast(isPinned ? '已取消置顶' : '已置顶', 'success');
     render();
   } catch (e) { toast('操作失败: ' + e.message, 'error'); }
+}
+
+async function adminEditPost(postId) {
+  const posts = state.adminData?.posts || [];
+  const post = posts.find(p => p.id === postId);
+  if (!post) { toast('帖子不存在', 'error'); return; }
+  const newTitle = prompt('修改帖子标题：', post.title);
+  if (newTitle === null) return;
+  const newContent = prompt('修改帖子内容：', post.content || '');
+  if (newContent === null) return;
+  try {
+    await API.request('/api/admin/posts/' + postId, { method: 'PUT', body: JSON.stringify({ title: newTitle, content: newContent }) });
+    toast('帖子已更新', 'success');
+    render();
+  } catch (e) { toast('修改失败: ' + e.message, 'error'); }
+}
+
+async function adminDeletePost(postId, title) {
+  if (!confirm('确定删除帖子「' + title + '」吗？')) return;
+  try {
+    await API.request('/api/admin/posts/' + postId, { method: 'DELETE' });
+    toast('帖子已删除', 'success');
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function adminEditUser(userId) {
+  const users = state.adminData?.users || [];
+  const user = users.find(u => u.id === userId);
+  if (!user) { toast('用户不存在', 'error'); return; }
+  const newNick = prompt('修改昵称：', user.nickname);
+  if (newNick === null) return;
+  const newDept = prompt('修改学部：', user.department || '');
+  if (newDept === null) return;
+  const newBio = prompt('修改简介：', user.bio || '');
+  if (newBio === null) return;
+  try {
+    await API.request('/api/admin/users/' + userId, { method: 'PUT', body: JSON.stringify({ nickname: newNick, department: newDept, bio: newBio }) });
+    toast('用户信息已更新', 'success');
+    render();
+  } catch (e) { toast('修改失败: ' + e.message, 'error'); }
+}
+
+async function adminDeleteUser(userId, nickname) {
+  if (!confirm('确定删除用户「' + nickname + '」吗？\n该用户的所有帖子和评论都将被删除！')) return;
+  try {
+    await API.request('/api/admin/users/' + userId, { method: 'DELETE' });
+    toast('用户已删除', 'success');
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 function renderAdminAnnounceForm() {
