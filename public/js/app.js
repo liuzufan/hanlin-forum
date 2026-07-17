@@ -1752,39 +1752,43 @@ async function translatePost(postId) {
   btn.disabled = true;
 
   try {
-    // 使用 MyMemory 翻译 API（POST方式，无URL长度限制）
-    var formData = new FormData();
-    formData.append('q', text);
-    formData.append('langpair', 'en|zh-CN');
-    var res = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text.substring(0, 480)) + '&langpair=en|zh-CN');
-    var data = await res.json();
     var translated = '';
-    if (data && data.responseData && data.responseData.translatedText) {
-      translated = data.responseData.translatedText;
-    }
-    // 如果文本太长，分段翻译
-    if (!translated && text.length > 480) {
-      var chunks = [];
-      var temp = text;
-      while (temp.length > 0) {
-        chunks.push(temp.substring(0, 480));
-        temp = temp.substring(480);
+    // 始终使用分段翻译，确保全文都能翻译
+    var chunkSize = 480;
+    var chunks = [];
+    var temp = text;
+    while (temp.length > 0) {
+      // 尽量在句号、换行、空格处断开，避免截断单词
+      if (temp.length <= chunkSize) {
+        chunks.push(temp);
+        break;
       }
-      var results = [];
-      for (var i = 0; i < chunks.length; i++) {
-        var cRes = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(chunks[i]) + '&langpair=en|zh-CN');
-        var cData = await cRes.json();
-        if (cData && cData.responseData && cData.responseData.translatedText) {
-          results.push(cData.responseData.translatedText);
-        }
-      }
-      translated = results.join('');
+      var cut = temp.lastIndexOf('.', chunkSize);
+      if (cut < 100) cut = temp.lastIndexOf('\n', chunkSize);
+      if (cut < 100) cut = temp.lastIndexOf(' ', chunkSize);
+      if (cut < 100) cut = chunkSize;
+      chunks.push(temp.substring(0, cut + 1));
+      temp = temp.substring(cut + 1);
     }
+
+    var results = [];
+    for (var i = 0; i < chunks.length; i++) {
+      if (!chunks[i].trim()) continue;
+      var cRes = await fetch('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(chunks[i]) + '&langpair=en|zh-CN');
+      var cData = await cRes.json();
+      if (cData && cData.responseData && cData.responseData.translatedText) {
+        results.push(cData.responseData.translatedText);
+      } else {
+        results.push(chunks[i]);
+      }
+    }
+    translated = results.join('');
+
     if (translated) {
       translatedPosts[postId] = { original: text, translated: translated };
       contentEl.innerHTML = escapeHtml(translated) + '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);font-size:0.78rem;color:var(--text-tertiary)"><i class="fas fa-info-circle"></i> 以上为机器翻译，<a style="color:var(--c-teal);cursor:pointer" onclick="translatePost(' + postId + ')">查看原文</a></div>';
       btn.innerHTML = '<i class="fas fa-undo"></i> 原文';
-      toast('翻译完成', 'success');
+      toast('翻译完成' + (chunks.length > 1 ? '（共' + chunks.length + '段）' : ''), 'success');
     } else {
       toast('翻译失败，请稍后重试', 'error');
       btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
