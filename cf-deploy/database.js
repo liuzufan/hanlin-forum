@@ -25,9 +25,10 @@ function getDefaultData() {
     users: [], categories: [], posts: [], comments: [],
     post_likes: [], post_votes: [], comment_likes: [],
     suggestions: [], suggestion_supports: [], notifications: [],
+    elections: [], election_candidates: [], election_votes: [],
     favorites: [], post_polls: [], poll_votes: [],
     announcements: [], banned_users: [],
-    nextId: { users: 1, categories: 1, posts: 1, comments: 1, suggestions: 1, notifications: 1, post_likes: 1, post_votes: 1, comment_likes: 1, suggestion_supports: 1, favorites: 1, post_polls: 1, poll_votes: 1, announcements: 1, banned_users: 1 },
+    nextId: { users: 1, categories: 1, posts: 1, comments: 1, suggestions: 1, notifications: 1, elections: 1, election_candidates: 1, election_votes: 1, post_likes: 1, post_votes: 1, comment_likes: 1, suggestion_supports: 1, favorites: 1, post_polls: 1, poll_votes: 1, announcements: 1, banned_users: 1 },
   };
 }
 

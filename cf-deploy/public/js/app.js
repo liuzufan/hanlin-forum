@@ -13,6 +13,7 @@ const state = {
   currentPost: null,
   comments: [],
   suggestions: [],
+  elections: [],
   notifications: [],
   unreadCount: 0,
   searchQuery: '',
@@ -26,16 +27,145 @@ const state = {
 // 前后端同源部署（IGA Pages），API_BASE 始终为空字符串
 const API_BASE = '';
 
+// ===== IndexedDB 本地缓存 (方案B) =====
+var IDB = {
+  _db: null,
+  _ready: null,
+
+  init() {
+    if (this._ready) return this._ready;
+    this._ready = new Promise(function(resolve) {
+      try {
+        var req = indexedDB.open('hanlin_cache', 1);
+        req.onupgradeneeded = function(e) {
+          var db = e.target.result;
+          if (!db.objectStoreNames.contains('kv')) {
+            db.createObjectStore('kv', { keyPath: 'k' });
+          }
+        };
+        req.onsuccess = function(e) { IDB._db = e.target.result; resolve(); };
+        req.onerror = function() { resolve(); }; // 降级：无IndexedDB时不缓存
+      } catch (e) { resolve(); }
+    });
+    return this._ready;
+  },
+
+  async get(key) {
+    await this.init();
+    if (!this._db) return null;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readonly');
+        var req = tx.objectStore('kv').get(key);
+        req.onsuccess = function() { resolve(req.result ? req.result.v : null); };
+        req.onerror = function() { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  },
+
+  async set(key, value) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put({ k: key, v: value, t: Date.now() });
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  },
+
+  async del(key) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').delete(key);
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  },
+
+  // 按前缀批量删除（用于缓存失效）
+  async delByPrefix(prefix) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        var store = tx.objectStore('kv');
+        var req = store.getAllKeys();
+        req.onsuccess = function() {
+          var keys = req.result || [];
+          keys.forEach(function(k) {
+            if (typeof k === 'string' && k.startsWith(prefix)) {
+              store.delete(k);
+            }
+          });
+        };
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  }
+};
+
+// ===== 智能 API 层 (stale-while-revalidate) =====
+var _bgRefreshing = {};
+function _hasContent(data) {
+  return !!(data && (
+    (data.posts && data.posts.length > 0) ||
+    (data.announcements && data.announcements.length > 0) ||
+    (data.categories && data.categories.length > 0) ||
+    (data.elections && data.elections.length > 0) ||
+    (data.suggestions && data.suggestions.length > 0) ||
+    (data.comments && data.comments.length > 0) ||
+    (data.id) ||
+    (data.user) ||
+    (data.stats)
+  ));
+}
+var _cacheTTL = {
+  '/api/posts': 3 * 60 * 1000,       // 帖子列表 3分钟
+  '/api/categories': 60 * 60 * 1000,  // 分类 1小时
+  '/api/announcements': 60 * 1000,     // 公告 1分钟
+  '/api/elections': 30 * 1000,        // 评选 30秒
+  '/api/suggestions': 2 * 60 * 1000,  // 建议 2分钟
+};
+
+function _getTTL(url) {
+  for (var prefix in _cacheTTL) {
+    if (url.startsWith(prefix)) return _cacheTTL[prefix];
+  }
+  // 帖子详情和评论：2分钟
+  if (url.match(/^\/api\/posts\/\d+$/)) return 2 * 60 * 1000;
+  if (url.match(/^\/api\/posts\/\d+\/comments$/)) return 2 * 60 * 1000;
+  return 60 * 1000; // 默认1分钟
+}
+
+function _isCacheable(url) {
+  // 不缓存认证、翻译、用户相关API
+  if (url.startsWith('/api/auth/')) return false;
+  if (url.startsWith('/api/translate')) return false;
+  if (url.startsWith('/api/admin/')) return false;
+  if (url.startsWith('/api/notifications')) return false;
+  if (url.startsWith('/api/user/')) return false;
+  if (url.startsWith('/api/profile/')) return false;
+  if (url.startsWith('/api/favorites')) return false;
+  return true;
+}
+
 const API = {
   async request(url, options = {}) {
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (state.token) headers['X-Auth-Token'] = state.token;
     try {
       const res = await fetch(API_BASE + url, { ...options, headers });
-      // 检查响应类型，防止非 JSON 响应导致解析错误
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
-        // 服务器返回了非 JSON（可能是 HTML 错误页面）
         if (res.status === 405) throw new Error('服务器暂时不可用，请稍后重试');
         if (!res.ok) throw new Error('请求失败 (' + res.status + ')');
         throw new Error('服务器响应格式错误，请刷新页面重试');
@@ -59,16 +189,97 @@ const API = {
           navigate('/login');
         }
       }
-      // 网络错误
       if (e.name === 'TypeError' && e.message.includes('fetch')) {
         throw new Error('网络连接失败，请检查网络后重试');
       }
       throw e;
     }
   },
-  get: (url) => API.request(url),
-  post: (url, body) => API.request(url, { method: 'POST', body: JSON.stringify(body) }),
-  put: (url, body) => API.request(url, { method: 'PUT', body: JSON.stringify(body) }),
+
+  // 智能GET：先返回缓存，后台静默刷新
+  async get(url) {
+    if (!_isCacheable(url)) {
+      return this.request(url);
+    }
+    var cacheKey = 'api:' + url;
+    var cached = await IDB.get(cacheKey);
+    if (cached && _hasContent(cached.v)) {
+      var age = Date.now() - (cached.t || 0);
+      var ttl = _getTTL(url);
+      if (age < ttl) {
+        // 缓存新鲜，直接返回
+        return cached.v;
+      }
+      // 缓存过期，先返回旧数据，后台刷新
+      this._refreshBg(url, cacheKey);
+      return cached.v;
+    }
+    // 无缓存或缓存为空，从服务器获取
+    var data = await this.request(url);
+    if (_hasContent(data)) {
+      await IDB.set(cacheKey, { v: data, t: Date.now() });
+    }
+    return data;
+  },
+
+  // 后台静默刷新
+  _refreshBg(url, cacheKey) {
+    if (_bgRefreshing[cacheKey]) return;
+    _bgRefreshing[cacheKey] = true;
+    var self = this;
+    this.request(url).then(function(data) {
+      if (_hasContent(data)) {
+        IDB.set(cacheKey, { v: data, t: Date.now() });
+      }
+    }).catch(function() {}).then(function() {
+      _bgRefreshing[cacheKey] = false;
+    });
+  },
+
+  // 写操作：先请求服务器，成功后失效相关缓存
+  async post(url, body) {
+    var data = await this.request(url, { method: 'POST', body: JSON.stringify(body) });
+    this._invalidate(url, body);
+    return data;
+  },
+
+  async put(url, body) {
+    var data = await this.request(url, { method: 'PUT', body: JSON.stringify(body) });
+    this._invalidate(url, body);
+    return data;
+  },
+
+  async delete(url) {
+    var data = await this.request(url, { method: 'DELETE' });
+    this._invalidate(url);
+    return data;
+  },
+
+  // 缓存失效逻辑
+  _invalidate(url, body) {
+    // 帖子相关写操作 → 清除帖子列表缓存
+    if (url.startsWith('/api/posts')) {
+      IDB.delByPrefix('api:/api/posts');
+    }
+    // 评论 → 清除评论和帖子详情缓存
+    if (url.match(/^\/api\/posts\/\d+\/comments$/)) {
+      var postId = url.match(/^\/api\/posts\/(\d+)/)[1];
+      IDB.del('api:/api/posts/' + postId + '/comments');
+      IDB.del('api:/api/posts/' + postId);
+    }
+    // 评选投票 → 清除评选缓存
+    if (url.match(/^\/api\/elections\/\d+\/vote$/)) {
+      IDB.delByPrefix('api:/api/elections');
+    }
+    // 建议 → 清除建议缓存
+    if (url.startsWith('/api/suggestions')) {
+      IDB.delByPrefix('api:/api/suggestions');
+    }
+    // 公告 → 清除公告缓存
+    if (url.startsWith('/api/announcements')) {
+      IDB.delByPrefix('api:/api/announcements');
+    }
+  }
 };
 
 // ===== Utilities =====
@@ -108,10 +319,97 @@ function toast(message, type = 'info') {
   el.className = `toast ${type}`;
   el.innerHTML = `<i class="fas fa-${icons[type]}"></i><span>${escapeHtml(message)}</span>`;
   container.appendChild(el);
-  setTimeout(() => {
-    el.classList.add('fade-out');
-    setTimeout(() => el.remove(), 300);
-  }, 3000);
+  setTimeout(() => { el.classList.add('fade-out'); setTimeout(() => el.remove(), 250); }, 2800);
+}
+
+// ===== 公告折叠 & 未读弹窗 =====
+function toggleAnnouncement(annId, btnEl) {
+  var body = document.getElementById('annBody-' + annId);
+  var btn = btnEl || (event && event.currentTarget ? event.currentTarget : document.querySelector('.announcement-banner[data-ann-id="' + annId + '"] .ann-toggle-btn'));
+  var icon = btn ? btn.querySelector('i') : null;
+  if (!body) return;
+  var isCollapsed = body.classList.toggle('ann-collapsed');
+  if (icon) {
+    icon.className = isCollapsed ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+  }
+  if (btn) btn.blur();
+}
+
+var _allAnnExpanded = false;
+function toggleAllAnnouncements() {
+  _allAnnExpanded = !_allAnnExpanded;
+  var container = document.getElementById('annContainer');
+  if (!container) return;
+  var banners = container.querySelectorAll('.announcement-banner');
+  var moreText = document.getElementById('annMoreText');
+  var moreIcon = document.getElementById('annMoreIcon');
+  // 隐藏的公告（index >= 2）
+  for (var i = 2; i < banners.length; i++) {
+    banners[i].style.display = _allAnnExpanded ? 'flex' : 'none';
+  }
+  if (moreText) moreText.textContent = _allAnnExpanded ? '收起公告' : ('查看全部 ' + banners.length + ' 条公告');
+  if (moreIcon) moreIcon.className = _allAnnExpanded ? 'fas fa-chevron-up' : 'fas fa-chevron-down';
+}
+
+// 未读公告弹窗
+function _getReadAnnouncements() {
+  try { return JSON.parse(localStorage.getItem('readAnnouncements') || '[]'); } catch(e) { return []; }
+}
+function _markAnnouncementRead(annId) {
+  var read = _getReadAnnouncements();
+  if (read.indexOf(annId) === -1) {
+    read.push(annId);
+    localStorage.setItem('readAnnouncements', JSON.stringify(read));
+  }
+}
+function _markAllAnnouncementsRead(announcements) {
+  var read = _getReadAnnouncements();
+  announcements.forEach(function(a) { if (read.indexOf(a.id) === -1) read.push(a.id); });
+  localStorage.setItem('readAnnouncements', JSON.stringify(read));
+}
+
+function showAnnouncementPopup(announcements) {
+  if (!announcements || announcements.length === 0) return;
+  var read = _getReadAnnouncements();
+  var unread = announcements.filter(function(a) { return read.indexOf(a.id) === -1; });
+  if (unread.length === 0) return;
+
+  var overlay = document.createElement('div');
+  overlay.className = 'ann-popup-overlay';
+  overlay.innerHTML = '<div class="ann-popup">' +
+    '<div class="ann-popup-header">' +
+      '<i class="fas fa-bullhorn"></i>' +
+      '<span>' + (unread.length === 1 ? '新公告' : unread.length + ' 条新公告') + '</span>' +
+      '<button class="ann-popup-close" onclick="this.parentElement.parentElement.remove()"><i class="fas fa-times"></i></button>' +
+    '</div>' +
+    '<div class="ann-popup-body">' +
+      unread.map(function(a) {
+        return '<div class="ann-popup-item">' +
+          '<div class="ann-popup-title">' + escapeHtml(a.title) + '</div>' +
+          '<div class="ann-popup-text">' + escapeHtml(a.content) + '</div>' +
+          '<div class="ann-popup-time"><i class="fas fa-clock"></i> ' + formatTime(a.created_at) + ' · ' + escapeHtml(a.author && a.author.nickname || '管理员') + '</div>' +
+        '</div>';
+      }).join('') +
+    '</div>' +
+    '<div class="ann-popup-footer">' +
+      '<button class="btn btn-primary ann-popup-ok" onclick="_closeAnnPopup()">我知道了</button>' +
+    '</div>' +
+  '</div>';
+  document.body.appendChild(overlay);
+  // 动画
+  requestAnimationFrame(function() { overlay.classList.add('show'); });
+}
+
+function _closeAnnPopup() {
+  var overlay = document.querySelector('.ann-popup-overlay');
+  if (overlay) {
+    overlay.classList.remove('show');
+    setTimeout(function() { overlay.remove(); }, 300);
+  }
+  // 标记所有已读
+  API.get('/api/announcements').then(function(d) {
+    if (d.announcements) _markAllAnnouncementsRead(d.announcements);
+  }).catch(function(){});
 }
 
 function navigate(path) {
@@ -186,9 +484,16 @@ function selectRole(role) {
 
 // ===== Load Categories =====
 async function loadCategories() {
+  // 先用缓存快速渲染，后台静默刷新
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem('categories_cache') || 'null'); } catch {}
+  if (cached && cached.length > 0) {
+    state.categories = cached;
+  }
   try {
     const data = await API.get('/api/categories');
     state.categories = data.categories;
+    localStorage.setItem('categories_cache', JSON.stringify(data.categories));
   } catch (e) {
     console.error('Failed to load categories:', e);
   }
@@ -282,6 +587,9 @@ async function renderShell(content) {
       <button class="mobile-nav-item ${getRoute() === '/suggestions' ? 'active' : ''}" onclick="navigate('/suggestions')">
         <i class="fas fa-lightbulb nav-icon"></i><span>建议</span>
       </button>
+      <button class="mobile-nav-item ${getRoute() === '/elections' ? 'active' : ''}" onclick="navigate('/elections')">
+        <i class="fas fa-trophy nav-icon"></i><span>评选</span>
+      </button>
       <button class="mobile-nav-item ${getRoute().startsWith('/profile') ? 'active' : ''}" onclick="navigate('/profile/${state.user?.id || ''}')">
         <i class="fas fa-user nav-icon"></i><span>我的</span>
       </button>
@@ -302,6 +610,9 @@ function renderSidebar() {
     </div>
     <div class="nav-item ${route === '/suggestions' ? 'active' : ''}" onclick="navigate('/suggestions')">
       <i class="fas fa-lightbulb nav-icon"></i><span>建议反馈</span>
+    </div>
+    <div class="nav-item ${route === '/elections' ? 'active' : ''}" onclick="navigate('/elections')">
+      <i class="fas fa-trophy nav-icon"></i><span>评选活动</span>
     </div>
     ${state.user && state.user.role === 'admin' ? `
     <div class="nav-item ${route === '/admin' ? 'active' : ''}" onclick="navigate('/admin')" style="color:var(--c-burgundy);font-weight:700">
@@ -572,8 +883,8 @@ function renderPostList(posts, loading = false) {
           </div>
           <span class="post-meta-item"><i class="far fa-clock"></i> ${formatTime(post.created_at)}</span>
           <span class="post-meta-item"><i class="far fa-eye"></i> ${post.views}</span>
-          <span class="post-meta-item ${post.liked ? 'liked' : ''}"><i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}</span>
-          <span class="post-meta-item ${post.voted === 1 ? 'voted-up' : ''}"><i class="fas fa-arrow-up"></i> ${post.upvotes - post.downvotes}</span>
+          <span class="post-meta-item ${post.liked ? 'liked' : ''}" style="cursor:pointer" onclick="event.stopPropagation();quickLikePost(${post.id}, this)"><i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}</span>
+          <span class="post-meta-item ${post.voted === 1 ? 'voted-up' : ''}"><i class="fas fa-thumbs-up"></i> ${post.upvotes - post.downvotes}</span>
           <span class="post-meta-item"><i class="far fa-comment"></i> ${post.comment_count}</span>
         </div>
       </div>
@@ -588,23 +899,30 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
     state.homeDisplayLimit = 20;
     state.lastHomeQuery = querySig;
   }
+  // 并行加载帖子和公告
   let posts = [];
-  try {
-    const params = new URLSearchParams({ sort, limit: 100 });
-    if (category && category !== 'all') params.set('category', category);
-    if (search) params.set('search', search);
-    const data = await API.get(`/api/posts?${params}`);
-    posts = data.posts;
+  let announcements = [];
+  const params = new URLSearchParams({ sort, limit: 100 });
+  if (category && category !== 'all') params.set('category', category);
+  if (search) params.set('search', search);
+  
+  const [postsRes, annRes] = await Promise.allSettled([
+    API.get(`/api/posts?${params}`),
+    API.get('/api/announcements'),
+  ]);
+  if (postsRes.status === 'fulfilled') {
+    posts = postsRes.value.posts;
     state.posts = posts;
-  } catch (e) {
+  } else {
     toast('加载帖子失败', 'error');
   }
-
-  let announcements = [];
-  try {
-    const annData = await API.get('/api/announcements');
-    announcements = annData.announcements || [];
-  } catch {}
+  if (annRes.status === 'fulfilled') {
+    announcements = annRes.value.announcements || [];
+    // 触发未读公告弹窗（仅在首页且非搜索/分类时）
+    if (announcements.length > 0 && !search && category === 'all' && sort === 'latest') {
+      setTimeout(function() { showAnnouncementPopup(announcements); }, 800);
+    }
+  }
 
   const sortTabs = [
     { key: 'latest', label: '最新', icon: 'clock' },
@@ -628,16 +946,33 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
         `).join('')}
       </div>
     </div>
-    ${announcements.length > 0 ? announcements.slice(0, 2).map(a => `
-      <div class="glass announcement-banner">
-        <i class="fas fa-bullhorn ann-icon"></i>
-        <div class="ann-content">
-          <div class="ann-title">${escapeHtml(a.title)}</div>
-          <div class="ann-text">${escapeHtml(a.content)}</div>
-          <div class="ann-time">${formatTime(a.created_at)} · ${escapeHtml(a.author?.nickname || '管理员')}</div>
-        </div>
+    ${announcements.length > 0 ? `
+      <div class="announcement-container" id="annContainer">
+        ${announcements.slice(0, 2).map((a, idx) => `
+          <div class="glass announcement-banner ${idx === 0 ? 'ann-primary' : ''}" data-ann-id="${a.id}">
+            <i class="fas fa-bullhorn ann-icon"></i>
+            <div class="ann-content">
+              <div class="ann-header">
+                <div class="ann-title">${escapeHtml(a.title)}</div>
+                <button class="ann-toggle-btn" onclick="toggleAnnouncement(${a.id}, this)" title="折叠/展开">
+                  <i class="fas fa-chevron-up"></i>
+                </button>
+              </div>
+              <div class="ann-body" id="annBody-${a.id}">
+                <div class="ann-text">${escapeHtml(a.content)}</div>
+                <div class="ann-time"><i class="fas fa-clock"></i> ${formatTime(a.created_at)} · ${escapeHtml(a.author?.nickname || '管理员')}</div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+        ${announcements.length > 2 ? `
+          <button class="ann-show-more" onclick="toggleAllAnnouncements()">
+            <span id="annMoreText">查看全部 ${announcements.length} 条公告</span>
+            <i class="fas fa-chevron-down" id="annMoreIcon"></i>
+          </button>
+        ` : ''}
       </div>
-    `).join('') : ''}
+    ` : ''}
     <div id="postList">${renderPostList(displayPosts)}</div>
     ${posts.length > displayPosts.length ? `
       <div style="text-align:center;margin-top:16px">
@@ -749,14 +1084,19 @@ async function renderPostDetail(postId) {
       </div>
       <h1 class="post-detail-title">${escapeHtml(post.title)}</h1>
       <div class="post-detail-meta">
-        ${getAvatarHtml(author.nickname, author.avatar_color)}
+        <div style="cursor:pointer" onclick="navigate('/profile/${author.id}')">${getAvatarHtml(author.nickname, author.avatar_color)}</div>
         <div>
           <div style="font-weight:600;font-size:0.9rem">${escapeHtml(author.nickname)} <span style="color:var(--text-tertiary);font-weight:400;font-size:0.8rem">${escapeHtml(author.department || '')}</span></div>
           <div style="font-size:0.75rem;color:var(--text-tertiary)">${formatTime(post.created_at)} · ${post.views} 次浏览</div>
         </div>
         <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="navigate('/profile/${author.id}')">查看主页</button>
       </div>
-      <div class="post-detail-content">${escapeHtml(post.content)}</div>
+      <div class="post-detail-content" id="postContent-${post.id}">${escapeHtml(post.content)}</div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="translatePost(${post.id})" id="translateBtn-${post.id}">
+          <i class="fas fa-language"></i> 翻译
+        </button>
+      </div>
       ${post.tags && post.tags.length > 0 ? `
         <div class="post-tags" style="margin-top:16px">
           ${post.tags.map(t => `<span class="post-tag">#${escapeHtml(t)}</span>`).join('')}
@@ -764,19 +1104,19 @@ async function renderPostDetail(postId) {
       ` : ''}
       ${renderPoll(post)}
       <div class="post-detail-actions">
-        <div class="vote-group">
-          <button class="vote-btn ${post.voted === 1 ? 'active up' : ''}" onclick="votePost(${post.id}, 1)">
-            <i class="fas fa-arrow-up"></i> 赞
-          </button>
-          <span class="vote-score">${post.upvotes - post.downvotes}</span>
-          <button class="vote-btn ${post.voted === -1 ? 'active down' : ''}" onclick="votePost(${post.id}, -1)">
-            <i class="fas fa-arrow-down"></i> 踩
-          </button>
-        </div>
-        <button class="action-btn ${post.liked ? 'active like' : ''}" onclick="likePost(${post.id})">
+        <button class="action-btn ${post.liked ? 'active like' : ''}" onclick="likePost(${post.id}, this)">
           <i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}
         </button>
-        <button class="action-btn ${post.favorited ? 'active fav' : ''}" onclick="favoritePost(${post.id})">
+        <div class="vote-group">
+          <button class="vote-btn ${post.voted === 1 ? 'active up' : ''}" onclick="votePost(${post.id}, 1, this)">
+            <i class="fas fa-arrow-up"></i> 支持
+          </button>
+          <span class="vote-score">${post.upvotes - post.downvotes}</span>
+          <button class="vote-btn ${post.voted === -1 ? 'active down' : ''}" onclick="votePost(${post.id}, -1, this)">
+            <i class="fas fa-arrow-down"></i> 反对
+          </button>
+        </div>
+        <button class="action-btn ${post.favorited ? 'active fav' : ''}" onclick="favoritePost(${post.id}, this)">
           <i class="${post.favorited ? 'fas' : 'far'} fa-bookmark"></i> ${post.favorited ? '已收藏' : '收藏'}
         </button>
         <button class="action-btn" onclick="sharePost(${post.id})">
@@ -790,7 +1130,15 @@ async function renderPostDetail(postId) {
         <div class="comment-input-area">
           ${getAvatarHtml(state.user.nickname, state.user.avatar_color, 'sm')}
           <textarea id="commentInput" placeholder="写下你的评论..." rows="2"></textarea>
+          <label style="cursor:pointer;padding:6px;color:var(--text-secondary)" title="添加图片">
+            <i class="far fa-image"></i>
+            <input type="file" accept="image/*" style="display:none" onchange="handleCommentImage(this, 'comment')">
+          </label>
           <button class="btn btn-primary btn-sm" onclick="submitComment(${post.id})">发送</button>
+        </div>
+        <div id="commentImagePreview" style="display:none;margin-top:8px">
+          <img id="commentImagePreviewImg" style="max-width:120px;max-height:120px;border-radius:8px">
+          <button class="btn btn-ghost btn-sm" onclick="removeCommentImage('comment')"><i class="fas fa-times"></i></button>
         </div>
       ` : state.isGuest ? `
         <div class="guest-comment-hint">
@@ -819,7 +1167,7 @@ function renderCommentItem(comment) {
   var roleTag = comment.author.role === 'teacher' ? '<span class="comment-role-tag teacher">老师</span>' : '<span class="comment-role-tag student">学生</span>';
   return `
     <div class="comment-item">
-      ${getAvatarHtml(author.nickname, author.avatar_color, 'sm')}
+      <div style="cursor:pointer;flex-shrink:0" onclick="navigate('/profile/${author.id}')">${getAvatarHtml(author.nickname, author.avatar_color, 'sm')}</div>
       <div class="comment-body">
         <div class="comment-header">
           <span class="comment-author">${escapeHtml(author.nickname)}</span>
@@ -827,9 +1175,9 @@ function renderCommentItem(comment) {
           <span style="font-size:0.7rem;color:var(--text-tertiary);background:var(--bg-surface);padding:1px 6px;border-radius:4px">${escapeHtml(author.department || '')}</span>
           <span class="comment-time">${formatTime(comment.created_at)}</span>
         </div>
-        <div class="comment-content">${escapeHtml(comment.content)}</div>
+        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? (function() { cacheImage('comment-' + comment.id, comment.image); return `<img src="${escapeHtml(comment.image)}" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openCachedImage('comment-${comment.id}')" onerror="this.style.display='none'">`; })() : ''}</div>
         <div class="comment-actions">
-          <button class="comment-action ${comment.liked ? 'active' : ''}" onclick="likeComment(${comment.id})">
+          <button class="comment-action ${comment.liked ? 'active' : ''}" onclick="likeComment(${comment.id}, this)">
             <i class="${comment.liked ? 'fas' : 'far'} fa-heart"></i> ${comment.likes}
           </button>
           ${state.user ? `
@@ -837,11 +1185,24 @@ function renderCommentItem(comment) {
               <i class="far fa-comment"></i> 回复
             </button>
           ` : ''}
+          ${state.user && state.user.role === 'admin' ? `
+            <button class="comment-action" style="color:#dc2626" onclick="adminDeleteComment(${comment.id})">
+              <i class="fas fa-trash"></i> 删除
+            </button>
+          ` : ''}
         </div>
         <div id="replyArea-${comment.id}" style="display:none;margin-top:8px">
           <div class="comment-input-area" style="padding:8px 0">
             <textarea id="replyInput-${comment.id}" placeholder="回复 ${escapeHtml(author.nickname)}..." rows="2" style="min-height:36px;font-size:0.85rem"></textarea>
+            <label style="cursor:pointer;padding:4px;color:var(--text-secondary)" title="添加图片">
+              <i class="far fa-image"></i>
+              <input type="file" accept="image/*" style="display:none" onchange="handleCommentImage(this, 'reply-${comment.id}')">
+            </label>
             <button class="btn btn-primary btn-sm" onclick="submitReply(${comment.id})">回复</button>
+          </div>
+          <div id="replyImagePreview-${comment.id}" style="display:none;margin-top:4px">
+            <img id="replyImagePreviewImg-${comment.id}" style="max-width:80px;max-height:80px;border-radius:6px">
+            <button class="btn btn-ghost btn-sm" onclick="removeCommentImage('reply-${comment.id}')"><i class="fas fa-times"></i></button>
           </div>
         </div>
         ${comment.replies && comment.replies.length > 0 ? `
@@ -1212,6 +1573,343 @@ async function submitSuggestion() {
   }
 }
 
+// ===== Render: Elections =====
+var electionVoteInfo = { today_votes: 0, votes_remaining: 3, voted_candidate_counts: {} };
+
+async function renderElectionsPage() {
+  try {
+    const data = await API.get('/api/elections');
+    state.elections = data.elections || [];
+    electionVoteInfo = { today_votes: data.today_votes || 0, votes_remaining: data.votes_remaining !== undefined ? data.votes_remaining : 3, voted_candidate_counts: data.voted_candidate_counts || {} };
+  } catch (e) { toast(e.message, 'error'); }
+
+  var isAdmin = state.user && state.user.role === 'admin';
+
+  return `
+    <div class="glass" style="padding:20px;margin-bottom:16px">
+      <h1 style="margin-bottom:8px"><i class="fas fa-trophy" style="color:var(--c-gold)"></i> 评选活动</h1>
+      <p style="color:var(--text-secondary);font-size:0.85rem">参与校园评选，为心中最佳的人选投票！</p>
+      ${state.user ? `
+        <div style="margin-top:10px;padding:8px 12px;background:var(--bg-surface);border-radius:var(--radius);font-size:0.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px">
+          <i class="fas fa-ticket-alt" style="color:var(--c-gold)"></i>
+          今日剩余投票：<b style="color:var(--c-gold);font-size:1rem">${electionVoteInfo.votes_remaining}</b> / 3 票
+        </div>
+      ` : `
+        <div style="margin-top:10px;padding:8px 12px;background:var(--bg-surface);border-radius:var(--radius);font-size:0.82rem;color:var(--text-tertiary)">
+          <i class="fas fa-info-circle"></i> <a style="color:var(--c-teal);cursor:pointer" onclick="navigate('/login')">登录</a> 后可投票，每天3票
+        </div>
+      `}
+      ${isAdmin ? `
+        <button class="btn btn-primary" style="margin-top:12px" onclick="document.getElementById('electionForm').style.display='block'">
+          <i class="fas fa-plus"></i> 创建评选活动
+        </button>
+        <div id="electionForm" style="display:none;margin-top:16px;padding:16px;background:var(--bg-surface);border-radius:var(--radius)">
+          <div class="form-group">
+            <label class="form-label">评选标题（如：最佳教师评选）</label>
+            <input type="text" class="form-input" id="elecTitle" placeholder="输入评选标题">
+          </div>
+          <div class="form-group">
+            <label class="form-label">评选描述</label>
+            <textarea class="form-input" id="elecDesc" rows="3" placeholder="评选说明"></textarea>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">开始时间</label>
+              <input type="datetime-local" class="form-input" id="elecStart">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">结束时间</label>
+              <input type="datetime-local" class="form-input" id="elecEnd">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="createElection()"><i class="fas fa-check"></i> 创建</button>
+          <button class="btn btn-ghost" onclick="document.getElementById('electionForm').style.display='none'">取消</button>
+        </div>
+      ` : ''}
+    </div>
+    ${state.elections.length === 0 ? '<div class="empty-state glass"><p>暂无评选活动</p></div>' : state.elections.map(e => renderElectionCard(e, isAdmin)).join('')}
+  `;
+}
+
+function renderElectionCard(election, isAdmin) {
+  var statusColors = { upcoming: '#3b82f6', active: '#22c55e', ended: '#94a3b8' };
+  var statusLabels = { upcoming: '未开始', active: '进行中', ended: '已结束' };
+  var shareUrl = location.origin + '/#/elections';
+  var shareText = '快来参与「' + election.title + '」评选投票！' + election.candidates.map(c => c.name).join('、');
+  return `
+    <div class="glass" style="padding:20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <h2 style="font-size:1.1rem">${escapeHtml(election.title)}</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="padding:3px 10px;border-radius:12px;font-size:0.75rem;color:white;background:${statusColors[election.status]}">${statusLabels[election.status]}</span>
+          <button class="btn btn-ghost btn-sm" onclick="shareElection('${escapeHtml(election.title).replace(/'/g, "\\'")}', '${escapeHtml(election.description || '').replace(/'/g, "\\'")}')" title="分享评选"><i class="fas fa-share-alt"></i> 分享</button>
+          ${isAdmin ? `<button class="admin-delete-btn" onclick="deleteElection(${election.id})" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+        </div>
+      </div>
+      ${election.description ? `<p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:8px">${escapeHtml(election.description)}</p>` : ''}
+      <p style="font-size:0.75rem;color:var(--text-tertiary);margin-bottom:12px">
+        <i class="far fa-clock"></i> ${formatTime(election.start_date)} ~ ${formatTime(election.end_date)} · 共 ${election.total_votes} 票
+      </p>
+      <div style="display:grid;gap:12px">
+        ${election.candidates.map(c => renderCandidate(c, election, isAdmin)).join('')}
+      </div>
+      ${isAdmin && election.status !== 'ended' ? `
+        <button class="btn btn-ghost btn-sm" style="margin-top:12px" onclick="document.getElementById('candForm-${election.id}').style.display='block'">
+          <i class="fas fa-user-plus"></i> 添加候选人
+        </button>
+        <div id="candForm-${election.id}" style="display:none;margin-top:12px;padding:12px;background:var(--bg-surface);border-radius:var(--radius)">
+          <input type="text" class="form-input" id="candName-${election.id}" placeholder="候选人名称" style="margin-bottom:8px">
+          <input type="text" class="form-input" id="candDept-${election.id}" placeholder="学部/部门" style="margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:var(--radius);cursor:pointer;margin-bottom:8px;border:1px dashed var(--border-color)">
+            <i class="fas fa-camera" style="color:var(--c-teal)"></i>
+            <span id="candImgLabel-${election.id}" style="font-size:0.85rem;color:var(--text-secondary)">上传候选人照片</span>
+            <input type="file" accept="image/*" style="display:none" onchange="handleCandidateImage(this, ${election.id})">
+          </label>
+          <div id="candImgPreview-${election.id}" style="display:none;margin-bottom:8px">
+            <img id="candImgPreviewImg-${election.id}" style="max-width:80px;max-height:80px;border-radius:8px;vertical-align:middle">
+            <button class="btn btn-ghost btn-sm" onclick="clearCandidateImage(${election.id})"><i class="fas fa-times"></i></button>
+          </div>
+          <textarea class="form-input" id="candBio-${election.id}" rows="2" placeholder="简介/拉票宣言" style="margin-bottom:8px"></textarea>
+          <button class="btn btn-primary btn-sm" onclick="addCandidate(${election.id})"><i class="fas fa-check"></i> 添加</button>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('candForm-${election.id}').style.display='none'">取消</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderCandidate(candidate, election, isAdmin) {
+  var percent = election.total_votes > 0 ? Math.round(candidate.vote_count / election.total_votes * 100) : 0;
+  var myVoteCount = electionVoteInfo.voted_candidate_counts[candidate.id] || 0;
+  var hasVoted = myVoteCount > 0;
+  var canVote = state.user && election.status === 'active' && electionVoteInfo.votes_remaining > 0;
+  var noVoteReason = '';
+  if (!state.user) noVoteReason = '登录后可投票';
+  else if (election.status !== 'active') noVoteReason = '';
+  else if (electionVoteInfo.votes_remaining === 0) noVoteReason = '今日票数已用完';
+  var imgHtml = candidate.image
+    ? (function() { cacheImage('cand-' + candidate.id, candidate.image); return `<img src="${escapeHtml(candidate.image)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openCachedImage('cand-${candidate.id}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`; })()
+    : `<div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`;
+  return `
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;background:var(--bg-surface);border-radius:var(--radius);${hasVoted ? 'border:2px solid var(--c-gold)' : ''}">
+      ${imgHtml}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:4px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span style="font-weight:700;font-size:0.95rem">${escapeHtml(candidate.name)}</span>
+            ${candidate.department ? `<span style="font-size:0.72rem;color:var(--text-tertiary)">${escapeHtml(candidate.department)}</span>` : ''}
+            ${hasVoted ? '<span style="font-size:0.7rem;color:var(--c-gold);background:rgba(201,162,39,0.15);padding:1px 6px;border-radius:8px"><i class="fas fa-check-circle"></i> 已投' + myVoteCount + '票</span>' : ''}
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <button class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:0.73rem;color:var(--c-teal)" onclick="shareCandidate(${candidate.id}, '${escapeHtml(candidate.name).replace(/'/g, "\\'")}', '${escapeHtml(election.title).replace(/'/g, "\\'")}')" title="拉票分享"><i class="fas fa-bullhorn"></i> 拉票</button>
+            ${isAdmin ? `<button class="admin-delete-btn" onclick="deleteCandidate(${candidate.id})" title="删除候选人"><i class="fas fa-times"></i></button>` : ''}
+          </div>
+        </div>
+        ${candidate.bio ? `<p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px;line-height:1.4">${escapeHtml(candidate.bio)}</p>` : ''}
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <div style="flex:1;height:10px;background:var(--border-color);border-radius:5px;overflow:hidden">
+            <div style="width:${percent}%;height:100%;background:linear-gradient(90deg,var(--c-burgundy),var(--c-gold));border-radius:5px;transition:width 0.3s"></div>
+          </div>
+          <span style="font-size:0.8rem;color:var(--text-secondary);min-width:55px;text-align:right;font-weight:600">${candidate.vote_count}票</span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-tertiary)">${percent}% 占比</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;min-width:64px">
+        ${canVote ? `
+          <button class="btn btn-primary btn-sm" style="padding:6px 12px" onclick="voteCandidate(${election.id}, ${candidate.id})">
+            <i class="fas fa-thumbs-up"></i> 投票
+          </button>
+        ` : noVoteReason ? `
+          <span style="font-size:0.7rem;color:var(--text-tertiary);text-align:center">${noVoteReason}</span>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function createElection() {
+  var title = $('#elecTitle').value.trim();
+  var desc = $('#elecDesc').value.trim();
+  var start = $('#elecStart').value;
+  var end = $('#elecEnd').value;
+  if (!title || !start || !end) { toast('请填写完整', 'error'); return; }
+  try {
+    await API.post('/api/admin/elections', { title, description: desc, start_date: new Date(start).toISOString(), end_date: new Date(end).toISOString() });
+    toast('评选活动创建成功', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('创建失败: ' + e.message, 'error'); }
+}
+
+var candidateImages = {};
+
+function handleCandidateImage(input, electionId) {
+  var file = input.files[0];
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) { toast('图片不能超过8MB', 'error'); input.value = ''; return; }
+  var label = document.getElementById('candImgLabel-' + electionId);
+  if (label) label.textContent = '压缩中...';
+  compressImage(file, 400, 0.75).then(function(dataUrl) {
+    candidateImages[electionId] = dataUrl;
+    var preview = document.getElementById('candImgPreview-' + electionId);
+    var img = document.getElementById('candImgPreviewImg-' + electionId);
+    if (preview && img) {
+      img.src = dataUrl;
+      preview.style.display = 'block';
+    }
+    if (label) label.textContent = '已选择照片 (' + Math.round(dataUrl.length / 1024) + 'KB)';
+  }).catch(function(err) {
+    toast('图片处理失败: ' + err.message, 'error');
+    if (label) label.textContent = '上传候选人照片';
+  });
+}
+
+function clearCandidateImage(electionId) {
+  delete candidateImages[electionId];
+  var preview = document.getElementById('candImgPreview-' + electionId);
+  var label = document.getElementById('candImgLabel-' + electionId);
+  if (preview) preview.style.display = 'none';
+  if (label) label.textContent = '上传候选人照片';
+}
+
+function compressImage(file, maxSize, quality) {
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var canvas = document.createElement('canvas');
+        var ctx = canvas.getContext('2d');
+        var w = img.width, h = img.height;
+        // 等比缩放到 maxSize 以内
+        if (w > maxSize || h > maxSize) {
+          if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; }
+          else { w = Math.round(w * maxSize / h); h = maxSize; }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+        // JPEG 压缩，quality 0-1
+        var dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl);
+      };
+      img.onerror = function() { reject(new Error('图片加载失败')); };
+      img.src = e.target.result;
+    };
+    reader.onerror = function() { reject(new Error('文件读取失败')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addCandidate(electionId) {
+  var name = $('#candName-' + electionId).value.trim();
+  var dept = $('#candDept-' + electionId).value.trim();
+  var img = candidateImages[electionId] || '';
+  var bio = $('#candBio-' + electionId).value.trim();
+  if (!name) { toast('请填写候选人名称', 'error'); return; }
+  try {
+    await API.post('/api/admin/elections/' + electionId + '/candidates', { name, department: dept, image: img, bio });
+    toast('候选人添加成功', 'success');
+    delete candidateImages[electionId];
+    state.elections = [];
+    render();
+  } catch (e) { toast('添加失败: ' + e.message, 'error'); }
+}
+
+async function voteCandidate(electionId, candidateId) {
+  if (!state.user) { toast('请先登录后再投票', 'error'); navigate('/login'); return; }
+  if (electionVoteInfo.votes_remaining <= 0) { toast('今日投票次数已用完，明天再来吧', 'error'); return; }
+  if (!confirm('确定投票给该候选人吗？\n今日剩余 ' + electionVoteInfo.votes_remaining + ' 票，可给同一候选人投多票。')) return;
+  try {
+    const data = await API.post('/api/elections/' + electionId + '/vote', { candidate_id: candidateId });
+    toast(data.message || '投票成功', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('投票失败: ' + e.message, 'error'); }
+}
+
+function shareElection(title, desc) {
+  var url = location.origin + '/#/elections';
+  var text = '快来参与「' + title + '」评选投票吧！' + (desc ? desc : '');
+  showShareModal(text, url, title);
+}
+
+function shareCandidate(candidateId, candidateName, electionTitle) {
+  var url = location.origin + '/#/elections';
+  var text = '我在「' + electionTitle + '」评选中支持「' + candidateName + '」，快来为TA投票吧！';
+  showShareModal(text, url, candidateName + ' - ' + electionTitle);
+}
+
+function showShareModal(text, url, title) {
+  // 移除已有弹窗
+  var existing = document.querySelectorAll('.share-modal-overlay');
+  existing.forEach(function(m) { m.remove(); });
+
+  var modal = document.createElement('div');
+  modal.className = 'share-modal-overlay';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:flex-end;justify-content:center;z-index:9999;animation:fadeIn 0.2s ease';
+  modal.innerHTML = `
+    <div style="background:var(--bg-card);width:100%;max-width:420px;border-radius:20px 20px 0 0;padding:20px 16px 24px;box-shadow:0 -4px 20px rgba(0,0,0,0.15);animation:slideUp 0.3s ease">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h3 style="font-size:1rem;font-weight:700"><i class="fas fa-share-alt" style="color:var(--c-teal);margin-right:6px"></i>分享到</h3>
+        <button onclick="this.closest('.share-modal-overlay').remove()" style="width:28px;height:28px;border:none;background:var(--bg-surface);border-radius:50%;cursor:pointer;color:var(--text-secondary);font-size:0.9rem"><i class="fas fa-times"></i></button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="shareToWeibo('${encodeURIComponent(url)}','${encodeURIComponent(text)}')">
+          <div style="width:48px;height:48px;border-radius:50%;background:#e6162e;display:flex;align-items:center;justify-content:center"><i class="fab fa-weibo" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">微博</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="shareToQQ('${encodeURIComponent(url)}','${encodeURIComponent(title)}')">
+          <div style="width:48px;height:48px;border-radius:50%;background:#12b7f5;display:flex;align-items:center;justify-content:center"><i class="fab fa-qq" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">QQ</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="copyLink('${url}');this.closest('.share-modal-overlay').remove()">
+          <div style="width:48px;height:48px;border-radius:50%;background:var(--c-teal);display:flex;align-items:center;justify-content:center"><i class="fas fa-link" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">复制链接</span>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;padding:8px 4px;border-radius:12px;transition:background 0.2s" onmouseover="this.style.background='var(--bg-surface)'" onmouseout="this.style.background='transparent'" onclick="navigator.clipboard.writeText('${text.replace(/'/g, "\\'")} ${url}').then(function(){toast('文案已复制，可粘贴到微信分享','success');});this.closest('.share-modal-overlay').remove()">
+          <div style="width:48px;height:48px;border-radius:50%;background:#07c160;display:flex;align-items:center;justify-content:center"><i class="fab fa-weixin" style="color:white;font-size:1.3rem"></i></div>
+          <span style="font-size:0.75rem;color:var(--text-secondary)">微信文案</span>
+        </div>
+      </div>
+
+      <div style="background:var(--bg-surface);padding:12px 14px;border-radius:12px;margin-bottom:16px">
+        <div style="font-size:0.72rem;color:var(--text-tertiary);margin-bottom:4px"><i class="fas fa-quote-left"></i> 分享文案预览</div>
+        <div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5;max-height:60px;overflow:hidden">${escapeHtml(text)}</div>
+      </div>
+
+      <div style="text-align:center;font-size:0.75rem;color:var(--text-tertiary);padding:4px">
+        <i class="fas fa-info-circle"></i> 复制链接或文案后，可粘贴到微信、朋友圈、QQ等平台分享
+      </div>
+    </div>
+  `;
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
+async function deleteElection(electionId) {
+  if (!confirm('确定删除这个评选活动吗？所有候选人数据和投票记录都将被删除。')) return;
+  try {
+    await API.request('/api/admin/elections/' + electionId, { method: 'DELETE' });
+    IDB.delByPrefix('api:/api/elections');
+    toast('评选活动已删除', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
+async function deleteCandidate(candidateId) {
+  if (!confirm('确定删除该候选人吗？')) return;
+  try {
+    await API.request('/api/admin/candidates/' + candidateId, { method: 'DELETE' });
+    IDB.delByPrefix('api:/api/elections');
+    toast('候选人已删除', 'success');
+    state.elections = [];
+    render();
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
+}
+
 // ===== Render: Notifications =====
 async function renderNotifications() {
   if (!state.user) { navigate('/login'); return ''; }
@@ -1268,53 +1966,332 @@ function renderCategoriesPage() {
 }
 
 // ===== Actions =====
-async function likePost(postId) {
+// 首页快速点赞（乐观更新：立即更新UI，后台同步）
+async function quickLikePost(postId, el) {
   if (!requireAuth('点赞')) return;
-  try {
-    const data = await API.post(`/api/posts/${postId}/like`);
-    if (state.currentPost && state.currentPost.id === postId) {
-      state.currentPost.liked = data.liked;
-      state.currentPost.likes = data.likes;
-      render();
+  if (!state.user) { navigate('/login'); return; }
+
+  // 找到帖子数据
+  var post = state.posts.find(function(p) { return p.id === postId; });
+  if (!post) return;
+
+  // 乐观更新：立即切换UI状态
+  var wasLiked = post.liked;
+  post.liked = !wasLiked;
+  post.likes += wasLiked ? -1 : 1;
+
+  // 立即更新DOM（不触发完整render）
+  if (el) {
+    var icon = el.querySelector('i');
+    if (icon) {
+      icon.className = post.liked ? 'fas fa-heart' : 'far fa-heart';
+      // 点赞动画
+      icon.style.transform = 'scale(1.4)';
+      icon.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+      setTimeout(function() { icon.style.transform = 'scale(1)'; }, 200);
     }
-  } catch (e) { toast(e.message, 'error'); }
+    el.classList.toggle('liked', post.liked);
+    // 更新数字
+    el.innerHTML = el.innerHTML.replace(/\d+$/, post.likes);
+    // 重新设置图标（因为innerHTML替换了）
+    var newIcon = el.querySelector('i');
+    if (newIcon) {
+      newIcon.style.transform = 'scale(1.4)';
+      newIcon.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+      setTimeout(function() { newIcon.style.transform = 'scale(1)'; }, 200);
+    }
+  }
+
+  // 后台同步到服务器
+  try {
+    await API.post('/api/posts/' + postId + '/like');
+    // 成功后静默刷新缓存
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 失败回滚
+    post.liked = wasLiked;
+    post.likes += wasLiked ? 1 : -1;
+    toast(e.message || '点赞失败', 'error');
+    // 回滚UI
+    if (el) {
+      var icon2 = el.querySelector('i');
+      if (icon2) icon2.className = wasLiked ? 'fas fa-heart' : 'far fa-heart';
+      el.classList.toggle('liked', wasLiked);
+      el.innerHTML = el.innerHTML.replace(/\d+$/, post.likes);
+    }
+  }
 }
 
-async function votePost(postId, voteType) {
+async function likePost(postId, btn) {
+  if (!requireAuth('点赞')) return;
+  if (!state.user) { navigate('/login'); return; }
+
+  // 乐观更新
+  var post = state.currentPost;
+  if (post && post.id === postId) {
+    var wasLiked = post.liked;
+    post.liked = !wasLiked;
+    post.likes += wasLiked ? -1 : 1;
+
+    // 立即更新按钮（不重新渲染整个页面）
+    if (btn) {
+      btn.classList.toggle('active', post.liked);
+      btn.innerHTML = '<i class="' + (post.liked ? 'fas' : 'far') + ' fa-heart" style="transform:scale(1.4);transition:transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)"></i> ' + post.likes;
+      setTimeout(function() {
+        var i = btn.querySelector('i');
+        if (i) i.style.transform = 'scale(1)';
+      }, 200);
+    }
+  }
+
+  // 后台同步
+  try {
+    const data = await API.post('/api/posts/' + postId + '/like');
+    if (post && post.id === postId) {
+      post.liked = data.liked;
+      post.likes = data.likes;
+    }
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 回滚
+    if (post && post.id === postId) {
+      post.liked = wasLiked;
+      post.likes += wasLiked ? 1 : -1;
+      if (btn) {
+        btn.classList.toggle('active', wasLiked);
+        btn.innerHTML = '<i class="' + (wasLiked ? 'fas' : 'far') + ' fa-heart"></i> ' + post.likes;
+      }
+    }
+    toast(e.message || '点赞失败', 'error');
+  }
+}
+
+async function votePost(postId, voteType, btn) {
   if (!requireAuth('投票')) return;
-  try {
-    const data = await API.post(`/api/posts/${postId}/vote`, { vote_type: voteType });
-    if (state.currentPost && state.currentPost.id === postId) {
-      state.currentPost.voted = data.voted;
-      state.currentPost.upvotes = data.upvotes;
-      state.currentPost.downvotes = data.downvotes;
-      render();
+  if (!state.user) { navigate('/login'); return; }
+
+  var post = state.currentPost;
+  if (post && post.id === postId) {
+    var wasVoted = post.voted;
+    var oldUpvotes = post.upvotes;
+    var oldDownvotes = post.downvotes;
+
+    if (wasVoted === voteType) {
+      post.voted = 0;
+      if (voteType === 1) post.upvotes--;
+      else post.downvotes--;
+    } else {
+      post.voted = voteType;
+      if (voteType === 1) {
+        post.upvotes++;
+        if (wasVoted === -1) post.downvotes--;
+      } else {
+        post.downvotes++;
+        if (wasVoted === 1) post.upvotes--;
+      }
     }
-  } catch (e) { toast(e.message, 'error'); }
+
+    // 局部更新分数和按钮状态
+    var scoreEl = document.querySelector('.vote-score');
+    if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
+
+    // 更新投票按钮的 active 状态
+    var voteBtns = document.querySelectorAll('.vote-btn');
+    voteBtns.forEach(function(vb) {
+      var isUpBtn = vb.textContent.includes('支持') || vb.querySelector('.fa-arrow-up');
+      var isDownBtn = vb.textContent.includes('反对') || vb.querySelector('.fa-arrow-down');
+      if (isUpBtn) {
+        vb.classList.toggle('active', post.voted === 1);
+        vb.classList.toggle('up', post.voted === 1);
+      } else if (isDownBtn) {
+        vb.classList.toggle('active', post.voted === -1);
+        vb.classList.toggle('down', post.voted === -1);
+      }
+    });
+
+    // 后台同步
+    try {
+      const data = await API.post('/api/posts/' + postId + '/vote', { vote_type: voteType });
+      post.voted = data.voted;
+      post.upvotes = data.upvotes;
+      post.downvotes = data.downvotes;
+      if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
+      IDB.delByPrefix('api:/api/posts');
+    } catch (e) {
+      post.voted = wasVoted;
+      post.upvotes = oldUpvotes;
+      post.downvotes = oldDownvotes;
+      if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
+      // 回滚按钮状态
+      voteBtns.forEach(function(vb) {
+        var isUpBtn = vb.querySelector('.fa-arrow-up');
+        var isDownBtn = vb.querySelector('.fa-arrow-down');
+        if (isUpBtn) {
+          vb.classList.toggle('active', wasVoted === 1);
+          vb.classList.toggle('up', wasVoted === 1);
+        } else if (isDownBtn) {
+          vb.classList.toggle('active', wasVoted === -1);
+          vb.classList.toggle('down', wasVoted === -1);
+        }
+      });
+      toast(e.message || '投票失败', 'error');
+    }
+  } else {
+    try {
+      await API.post('/api/posts/' + postId + '/vote', { vote_type: voteType });
+    } catch (e) { toast(e.message, 'error'); }
+  }
 }
 
-async function favoritePost(postId) {
+async function favoritePost(postId, btn) {
   if (!requireAuth('收藏')) return;
-  try {
-    const data = await API.post(`/api/posts/${postId}/favorite`);
-    if (state.currentPost && state.currentPost.id === postId) {
-      state.currentPost.favorited = data.favorited;
-      render();
-      toast(data.favorited ? '已收藏' : '已取消收藏', 'success');
+  if (!state.user) { navigate('/login'); return; }
+
+  // 乐观更新
+  var post = state.currentPost;
+  if (post && post.id === postId) {
+    var wasFav = post.favorited;
+    post.favorited = !wasFav;
+
+    // 立即更新按钮UI
+    if (btn) {
+      btn.classList.toggle('active', post.favorited);
+      btn.innerHTML = '<i class="' + (post.favorited ? 'fas' : 'far') + ' fa-bookmark" style="transform:scale(1.3);transition:transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)"></i> ' + (post.favorited ? '已收藏' : '收藏');
+      setTimeout(function() {
+        var i = btn.querySelector('i');
+        if (i) i.style.transform = 'scale(1)';
+      }, 200);
     }
-  } catch (e) { toast(e.message, 'error'); }
+  }
+
+  try {
+    const data = await API.post('/api/posts/' + postId + '/favorite');
+    if (post && post.id === postId) post.favorited = data.favorited;
+    toast(data.favorited ? '已收藏' : '已取消收藏', 'success');
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 回滚
+    if (post && post.id === postId) {
+      post.favorited = wasFav;
+      if (btn) {
+        btn.classList.toggle('active', wasFav);
+        btn.innerHTML = '<i class="' + (wasFav ? 'fas' : 'far') + ' fa-bookmark"></i> ' + (wasFav ? '已收藏' : '收藏');
+      }
+    }
+    toast(e.message || '操作失败', 'error');
+  }
+}
+
+var commentImages = {};
+
+function handleCommentImage(input, key) {
+  var file = input.files[0];
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) { toast('图片不能超过8MB', 'error'); input.value = ''; return; }
+  compressImage(file, 600, 0.7).then(function(dataUrl) {
+    commentImages[key] = dataUrl;
+    var previewEl, imgEl;
+    if (key === 'comment') {
+      previewEl = document.getElementById('commentImagePreview');
+      imgEl = document.getElementById('commentImagePreviewImg');
+    } else {
+      previewEl = document.getElementById('replyImagePreview-' + key.replace('reply-', ''));
+      imgEl = document.getElementById('replyImagePreviewImg-' + key.replace('reply-', ''));
+    }
+    if (previewEl && imgEl) {
+      imgEl.src = dataUrl;
+      previewEl.style.display = 'block';
+    }
+    toast('图片已压缩 (' + Math.round(dataUrl.length / 1024) + 'KB)', 'info');
+  }).catch(function(err) {
+    toast('图片处理失败: ' + err.message, 'error');
+    input.value = '';
+  });
+}
+
+function removeCommentImage(key) {
+  delete commentImages[key];
+  var previewEl;
+  if (key === 'comment') {
+    previewEl = document.getElementById('commentImagePreview');
+  } else {
+    previewEl = document.getElementById('replyImagePreview-' + key.replace('reply-', ''));
+  }
+  if (previewEl) previewEl.style.display = 'none';
+}
+
+var _imageCache = {};
+
+function cacheImage(id, url) {
+  _imageCache[id] = url;
+}
+
+function openImagePreview(url) {
+  if (!url) return;
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out;animation:fadeIn 0.2s ease';
+  var img = document.createElement('img');
+  img.style.cssText = 'max-width:90%;max-height:90%;border-radius:8px;box-shadow:0 4px 30px rgba(0,0,0,0.5);animation:slideUp 0.3s ease';
+  img.src = url;
+  img.onerror = function() { toast('图片加载失败', 'error'); };
+  overlay.appendChild(img);
+  overlay.onclick = function() { document.body.removeChild(overlay); };
+  document.body.appendChild(overlay);
+}
+
+function openCachedImage(id) {
+  openImagePreview(_imageCache[id]);
 }
 
 async function submitComment(postId) {
   if (!requireAuth('评论')) return;
   const input = $('#commentInput');
   const content = input.value.trim();
-  if (!content) return;
+  const image = commentImages['comment'] || '';
+  if (!content && !image) return;
   try {
-    const data = await API.post(`/api/posts/${postId}/comments`, { content });
+    const data = await API.post('/api/posts/' + postId + '/comments', { content, image });
     state.comments.push(data.comment);
     input.value = '';
-    render();
+    delete commentImages['comment'];
+
+    // 局部更新：只追加新评论到DOM，不触发完整render
+    var commentsList = $('#commentsList');
+    if (commentsList) {
+      var commentHtml = renderCommentItem(data.comment);
+      var tempDiv = document.createElement('div');
+      tempDiv.innerHTML = commentHtml;
+      var newComment = tempDiv.firstElementChild;
+      // 添加淡入动画
+      if (newComment) {
+        newComment.style.opacity = '0';
+        newComment.style.transform = 'translateY(-8px)';
+        newComment.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+        // 如果有"暂无评论"提示，先移除
+        var emptyState = commentsList.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+        commentsList.insertBefore(newComment, commentsList.firstChild);
+        requestAnimationFrame(function() {
+          newComment.style.opacity = '1';
+          newComment.style.transform = 'translateY(0)';
+        });
+      }
+      // 更新评论数（h3标题中的数字）
+      if (state.currentPost) {
+        state.currentPost.comment_count = (state.currentPost.comment_count || 0) + 1;
+        var h3 = commentsList.parentElement.querySelector('h3');
+        if (h3) h3.innerHTML = '<i class="fas fa-comments" style="color:var(--c-teal)"></i> 评论 (' + state.currentPost.comment_count + ')';
+      }
+      // 重置图片预览
+      var imgPreview = $('#commentImagePreview');
+      if (imgPreview) { imgPreview.style.display = 'none'; imgPreview.innerHTML = ''; }
+      var imgPreviewImg = $('#commentImagePreviewImg');
+      if (imgPreviewImg) imgPreviewImg.src = '';
+    } else {
+      // 如果评论列表不存在,才完整render
+      render();
+    }
+
     toast('评论成功', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -1328,36 +2305,85 @@ function toggleReply(commentId) {
 async function submitReply(commentId) {
   const input = $(`#replyInput-${commentId}`);
   const content = input.value.trim();
-  if (!content) return;
+  const image = commentImages['reply-' + commentId] || '';
+  if (!content && !image) return;
   const postId = state.currentPost.id;
   try {
-    const data = await API.post(`/api/posts/${postId}/comments`, { content, parent_id: commentId });
+    const data = await API.post(`/api/posts/${postId}/comments`, { content, image, parent_id: commentId });
     // Find parent comment and add reply
     const parent = state.comments.find(c => c.id === commentId);
     if (parent) {
       if (!parent.replies) parent.replies = [];
       parent.replies.push(data.comment);
     }
+    delete commentImages['reply-' + commentId];
     render();
     toast('回复成功', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
 
-async function likeComment(commentId) {
+async function likeComment(commentId, btn) {
   if (!state.user) { navigate('/login'); return; }
-  try {
-    const data = await API.post(`/api/comments/${commentId}/like`);
-    // Update comment in state
-    function updateComment(comments) {
-      for (let c of comments) {
-        if (c.id === commentId) { c.liked = data.liked; c.likes = data.likes; return true; }
-        if (c.replies && updateComment(c.replies)) return true;
-      }
-      return false;
+
+  // 找到评论数据并乐观更新
+  var targetComment = null;
+  function findComment(comments) {
+    for (var c of comments) {
+      if (c.id === commentId) { targetComment = c; return true; }
+      if (c.replies && findComment(c.replies)) return true;
     }
-    updateComment(state.comments);
+    return false;
+  }
+  findComment(state.comments);
+  if (!targetComment) return;
+
+  var wasLiked = targetComment.liked;
+  targetComment.liked = !wasLiked;
+  targetComment.likes += wasLiked ? -1 : 1;
+
+  // 立即更新DOM
+  if (btn) {
+    btn.classList.toggle('active', targetComment.liked);
+    btn.innerHTML = '<i class="' + (targetComment.liked ? 'fas' : 'far') + ' fa-heart" style="transform:scale(1.4);transition:transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)"></i> ' + targetComment.likes;
+    setTimeout(function() {
+      var i = btn.querySelector('i');
+      if (i) i.style.transform = 'scale(1)';
+    }, 200);
+  }
+
+  // 后台同步
+  try {
+    const data = await API.post('/api/comments/' + commentId + '/like');
+    targetComment.liked = data.liked;
+    targetComment.likes = data.likes;
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 回滚
+    targetComment.liked = wasLiked;
+    targetComment.likes += wasLiked ? 1 : -1;
+    if (btn) {
+      btn.classList.toggle('active', wasLiked);
+      btn.innerHTML = '<i class="' + (wasLiked ? 'fas' : 'far') + ' fa-heart"></i> ' + targetComment.likes;
+    }
+    toast(e.message || '点赞失败', 'error');
+  }
+}
+
+async function adminDeleteComment(commentId) {
+  if (!confirm('确定删除这条评论吗？\n如果是楼中楼评论，其下所有回复也会被删除。')) return;
+  try {
+    const data = await API.request('/api/admin/comments/' + commentId, { method: 'DELETE' });
+    toast(data.message || '评论已删除', 'success');
+    // 失效缓存后重新加载
+    if (state.currentPost) {
+      await IDB.del('api:/api/posts/' + state.currentPost.id + '/comments');
+      await IDB.del('api:/api/posts/' + state.currentPost.id);
+      const commentData = await API.get('/api/posts/' + state.currentPost.id + '/comments');
+      state.comments = commentData.comments;
+      state.currentPost.comment_count = (state.currentPost.comment_count || 0) - (data.count || 1);
+    }
     render();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
 
 async function supportSuggestion(sugId) {
@@ -1453,6 +2479,62 @@ function copyLink(url) {
   });
 }
 
+var translatedPosts = {};
+
+async function translatePost(postId) {
+  var contentEl = document.getElementById('postContent-' + postId);
+  var btn = document.getElementById('translateBtn-' + postId);
+  if (!contentEl || !btn) return;
+
+  // 已翻译则切换回原文
+  if (translatedPosts[postId]) {
+    contentEl.innerHTML = escapeHtml(translatedPosts[postId].original);
+    btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+    delete translatedPosts[postId];
+    return;
+  }
+
+  // 检测是否包含中文，如果主要是中文则提示无需翻译
+  var text = contentEl.textContent;
+  var chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+  if (chineseChars > text.length * 0.5) {
+    toast('该内容主要是中文，无需翻译', 'info');
+    return;
+  }
+
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 翻译中...';
+  btn.disabled = true;
+
+  try {
+    // 使用后端代理翻译API（无配额限制、无CORS问题、无URL长度限制）
+    var res = await fetch('/api/translate?q=' + encodeURIComponent(text) + '&to=zh-CN');
+    var data = await res.json();
+    var translated = '';
+    if (data && data.translated) {
+      translated = data.translated;
+    } else if (data && data.error) {
+      toast(data.error, 'error');
+      btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+      btn.disabled = false;
+      return;
+    }
+
+    if (translated) {
+      translatedPosts[postId] = { original: text, translated: translated };
+      contentEl.innerHTML = escapeHtml(translated) + '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border-color);font-size:0.78rem;color:var(--text-tertiary)"><i class="fas fa-info-circle"></i> 以上为机器翻译，<a style="color:var(--c-teal);cursor:pointer" onclick="translatePost(' + postId + ')">查看原文</a></div>';
+      btn.innerHTML = '<i class="fas fa-undo"></i> 原文';
+      toast('翻译完成', 'success');
+    } else {
+      toast('翻译失败，请稍后重试', 'error');
+      btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+    }
+  } catch (e) {
+    toast('翻译服务暂时不可用: ' + e.message, 'error');
+    btn.innerHTML = '<i class="fas fa-language"></i> 翻译';
+  }
+  btn.disabled = false;
+}
+
 function doSearch(query) {
   state.searchQuery = query.trim();
   navigate(`/search?q=${encodeURIComponent(state.searchQuery)}`);
@@ -1476,10 +2558,36 @@ async function loadNotifications() {
 }
 
 // ===== Router =====
-async function render() {
+var _renderTimer = null;
+var _isRendering = false;
+
+function render() {
+  // 防抖：使用 requestAnimationFrame 确保在下一帧渲染，避免丢帧
+  if (_renderTimer) cancelAnimationFrame(_renderTimer);
+  return new Promise(function(resolve) {
+    _renderTimer = requestAnimationFrame(function() {
+      _renderTimer = null;
+      if (_isRendering) { resolve(); return; }
+      _isRendering = true;
+      // 使用 microtask 确保状态更新已完成
+      Promise.resolve().then(async function() {
+        try {
+          await _doRender();
+        } finally {
+          _isRendering = false;
+        }
+        resolve();
+      });
+    });
+  });
+}
+
+async function _doRender() {
   const route = getRoute();
   const app = $('#app');
   let content = '';
+
+  app.dataset.route = route;
 
   // Auth page
   if (route.startsWith('/login')) {
@@ -1516,6 +2624,8 @@ async function render() {
     content = await renderFavorites();
   } else if (route === '/suggestions') {
     content = await renderSuggestionsPage();
+  } else if (route === '/elections' || route.startsWith('/elections/')) {
+    content = await renderElectionsPage();
   } else if (route === '/create-suggestion') {
     content = renderCreateSuggestion();
   } else if (route === '/notifications') {
@@ -1542,21 +2652,17 @@ var adminTab = 'dashboard';
 async function renderAdminPanel() {
   let stats = {}, users = [], posts = [], announcements = [];
   
-  try {
-    stats = await API.get('/api/admin/stats');
-  } catch {}
-  try {
-    const ud = await API.get('/api/admin/users');
-    users = ud.users || [];
-  } catch {}
-  try {
-    const pd = await API.get('/api/posts?limit=50');
-    posts = pd.posts || [];
-  } catch {}
-  try {
-    const ad = await API.get('/api/announcements');
-    announcements = ad.announcements || [];
-  } catch {}
+  // 并行加载所有数据，大幅提升速度
+  const [statsRes, usersRes, postsRes, annRes] = await Promise.allSettled([
+    API.get('/api/admin/stats'),
+    API.get('/api/admin/users'),
+    API.get('/api/posts?limit=50'),
+    API.get('/api/announcements'),
+  ]);
+  if (statsRes.status === 'fulfilled') stats = statsRes.value;
+  if (usersRes.status === 'fulfilled') users = usersRes.value.users || [];
+  if (postsRes.status === 'fulfilled') posts = postsRes.value.posts || [];
+  if (annRes.status === 'fulfilled') announcements = annRes.value.announcements || [];
 
   state.adminData = { users, posts, stats };
 
@@ -1861,34 +2967,47 @@ function renderAdminAnnounceForm() {
   if (!announcements_global || announcements_global.length === 0) {
     API.get('/api/announcements').then(function(ad) {
       announcements_global = ad.announcements || [];
-      if (announcements_global.length > 0) render();
+      render();
     }).catch(function() {});
   }
   return `
-    <div style="max-width:500px">
+    <div style="max-width:600px">
+      <h3 style="margin-bottom:12px"><i class="fas fa-bullhorn" style="color:var(--c-gold)"></i> 发布新公告</h3>
       <div class="form-group">
         <label class="form-label">公告标题</label>
         <input type="text" class="form-input" id="annTitle" placeholder="输入公告标题">
       </div>
       <div class="form-group">
         <label class="form-label">公告内容</label>
-        <textarea class="form-input" id="annContent" placeholder="输入公告内容" rows="5"></textarea>
+        <textarea class="form-input" id="annContent" placeholder="输入公告内容（支持换行）" rows="5"></textarea>
       </div>
-      <button class="btn btn-primary" onclick="createAnnouncement()"><i class="fas fa-bullhorn"></i> 发布公告</button>
-    </div>
-    ${announcements_global && announcements_global.length ? `
-      <h3 style="margin-top:24px;margin-bottom:12px">历史公告</h3>
-      ${announcements_global.map(a => `
-        <div class="glass" style="padding:14px;margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <div style="font-weight:700;font-size:0.88rem">${escapeHtml(a.title)}</div>
-            <button class="admin-delete-btn" onclick="adminDeleteAnnouncement(${a.id})" title="删除公告"><i class="fas fa-trash"></i></button>
-          </div>
-          <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:4px">${escapeHtml(a.content)}</div>
-          <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:4px">${formatTime(a.created_at)}</div>
+      <button class="btn btn-primary" onclick="createAnnouncement()"><i class="fas fa-paper-plane"></i> 发布公告</button>
+      
+      <h3 style="margin-top:28px;margin-bottom:12px">
+        <i class="fas fa-list" style="color:var(--c-gold)"></i> 公告管理
+        ${announcements_global && announcements_global.length ? '<span style="font-size:0.8rem;color:var(--text-tertiary);font-weight:400">（共 ' + announcements_global.length + ' 条）</span>' : ''}
+      </h3>
+      ${announcements_global && announcements_global.length ? `
+        <div class="admin-ann-list">
+          ${announcements_global.map(a => `
+            <div class="glass admin-ann-item">
+              <div class="admin-ann-header">
+                <div class="admin-ann-title">${escapeHtml(a.title)}</div>
+                <button class="admin-delete-btn admin-ann-delete" onclick="adminDeleteAnnouncement(${a.id})" title="删除公告">
+                  <i class="fas fa-trash"></i> 删除
+                </button>
+              </div>
+              <div class="admin-ann-content">${escapeHtml(a.content)}</div>
+              <div class="admin-ann-meta">
+                <i class="fas fa-clock"></i> ${formatTime(a.created_at)}
+                ${a.author ? ' · ' + escapeHtml(a.author.nickname || '管理员') : ''}
+                <span class="admin-ann-id">#${a.id}</span>
+              </div>
+            </div>
+          `).join('')}
         </div>
-      `).join('')}
-    ` : ''}
+      ` : '<div class="empty-state" style="padding:20px;text-align:center;color:var(--text-tertiary)">暂无公告</div>'}
+    </div>
   `;
 }
 
@@ -2232,17 +3351,21 @@ async function adminCreatePoll() {
 
 // ===== Init =====
 async function init() {
+  // 预初始化IndexedDB（不阻塞，后台执行）
+  IDB.init();
   if (state.token) {
-    const ok = await checkAuth();
+    // 并行执行认证检查和分类加载，加速启动
+    const [ok] = await Promise.all([
+      checkAuth(),
+      loadCategories(),
+    ]);
     if (ok) {
-      await loadCategories();
-      await loadNotifications();
+      loadNotifications(); // 不阻塞，后台静默加载
     } else {
       // Token expired or invalid
       state.token = null;
       state.user = null;
       localStorage.removeItem('token');
-      await loadCategories();
       var route = getRoute();
       if (!route.startsWith('/login') && !route.startsWith('/post/')) {
         navigate('/login');
@@ -2263,7 +3386,7 @@ async function init() {
   window.addEventListener('hashchange', render);
   await render();
   
-  // Periodically check notifications
+  // Periodically check notifications (静默，不触发渲染)
   setInterval(loadNotifications, 60000);
 }
 

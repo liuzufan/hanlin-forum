@@ -11,7 +11,10 @@ const JWT_SECRET = 'hanlin-forum-secret-2026';
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    },
   });
 }
 
@@ -240,24 +243,27 @@ async function handleRequest(request) {
         if (![1, -1].includes(vote_type)) return json({ error: '无效的投票类型' }, 400);
         const postId = parseInt(m[1]);
         const existing = findOne('post_votes', { post_id: postId, user_id: user.id });
-        const post = findById('posts', postId);
+        let post = findById('posts', postId);
         if (!post) return json({ error: '帖子不存在' }, 404);
         if (existing) {
           if (existing.vote_type === vote_type) {
             remove('post_votes', { post_id: postId, user_id: user.id });
             if (vote_type === 1) increment('posts', postId, 'upvotes', -1);
             else increment('posts', postId, 'downvotes', -1);
+            post = findById('posts', postId);
             return json({ voted: 0, upvotes: post.upvotes, downvotes: post.downvotes });
           } else {
             update('post_votes', existing.id, { vote_type });
             if (vote_type === 1) { increment('posts', postId, 'upvotes', 1); increment('posts', postId, 'downvotes', -1); }
             else { increment('posts', postId, 'upvotes', -1); increment('posts', postId, 'downvotes', 1); }
+            post = findById('posts', postId);
             return json({ voted: vote_type, upvotes: post.upvotes, downvotes: post.downvotes });
           }
         } else {
           insert('post_votes', { post_id: postId, user_id: user.id, vote_type, created_at: new Date().toISOString() });
           if (vote_type === 1) increment('posts', postId, 'upvotes', 1);
           else increment('posts', postId, 'downvotes', 1);
+          post = findById('posts', postId);
           return json({ voted: vote_type, upvotes: post.upvotes, downvotes: post.downvotes });
         }
       }
@@ -298,12 +304,12 @@ async function handleRequest(request) {
       if (m = path.match(/^\/api\/posts\/(\d+)\/comments$/)) {
         const { user, error } = requireAuth(request);
         if (error) return error;
-        const { content, parent_id } = await getBody(request);
-        if (!content) return json({ error: '请输入评论内容' }, 400);
+        const { content, parent_id, image } = await getBody(request);
+        if (!content && !image) return json({ error: '请输入评论内容' }, 400);
         const postId = parseInt(m[1]);
         const comment = insert('comments', {
           post_id: postId, user_id: user.id, parent_id: parent_id || null,
-          content, created_at: new Date().toISOString(), likes: 0,
+          content: content || '', image: image || '', created_at: new Date().toISOString(), likes: 0,
         });
         increment('posts', postId, 'comment_count', 1);
         increment('users', user.id, 'comment_count', 1);
@@ -548,6 +554,60 @@ async function handleRequest(request) {
         return json({ error: '未知操作' }, 400);
       }
 
+      // POST /api/admin/elections - 创建评选活动
+      if (path === '/api/admin/elections') {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const { title, description, start_date, end_date } = await getBody(request);
+        if (!title || !start_date || !end_date) return json({ error: '请填写完整' }, 400);
+        const election = insert('elections', {
+          title, description: description || '',
+          start_date, end_date,
+          status: 'active', created_at: new Date().toISOString(),
+          created_by: user.id,
+        });
+        return json({ election });
+      }
+
+      // POST /api/admin/elections/:id/candidates - 添加候选人
+      if (m = path.match(/^\/api\/admin\/elections\/(\d+)\/candidates$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const { name, bio, image, department } = await getBody(request);
+        if (!name) return json({ error: '请填写候选人名称' }, 400);
+        const candidate = insert('election_candidates', {
+          election_id: electionId, name, bio: bio || '',
+          image: image || '', department: department || '',
+          vote_count: 0, created_at: new Date().toISOString(),
+        });
+        return json({ candidate });
+      }
+
+      // POST /api/elections/:id/vote - 投票
+      if (m = path.match(/^\/api\/elections\/(\d+)\/vote$/)) {
+        const { user, error } = requireAuth(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const { candidate_id } = await getBody(request);
+        if (!candidate_id) return json({ error: '请选择候选人' }, 400);
+        const election = findById('elections', electionId);
+        if (!election) return json({ error: '评选活动不存在' }, 404);
+        const now = new Date();
+        if (now < new Date(election.start_date)) return json({ error: '评选尚未开始' }, 400);
+        if (now > new Date(election.end_date)) return json({ error: '评选已结束' }, 400);
+        const candidate = findById('election_candidates', candidate_id);
+        if (!candidate || candidate.election_id !== electionId) return json({ error: '候选人不存在' }, 404);
+        // 每人每天3票限制（跨所有评选活动）
+        const todayStr = now.toISOString().split('T')[0];
+        const todayVotes = findAll('election_votes', { user_id: user.id }).filter(v => v.created_at.startsWith(todayStr));
+        if (todayVotes.length >= 3) return json({ error: '今日投票次数已达上限（3票），明天再来吧' }, 400);
+        insert('election_votes', { election_id: electionId, candidate_id, user_id: user.id, created_at: new Date().toISOString() });
+        increment('election_candidates', candidate_id, 'vote_count', 1);
+        const remaining = 3 - todayVotes.length - 1;
+        return json({ success: true, message: '投票成功！今日剩余' + remaining + '票', remaining });
+      }
+
       // PUT /api/admin/posts/:id (toggle hot/pin)
       // This goes in the PUT section - add before "PUT /api/users/profile"
 
@@ -666,6 +726,78 @@ async function handleRequest(request) {
             };
           });
         return json({ announcements });
+      }
+
+      // GET /api/elections - 获取所有评选活动
+      if (path === '/api/elections') {
+        const db = getDB();
+        const currentUser = getAuthUser(request);
+        const todayStr = new Date().toISOString().split('T')[0];
+        let todayVoteCount = 0;
+        let votedCandidateCounts = {};
+        if (currentUser) {
+          const myVotes = findAll('election_votes', { user_id: currentUser.id });
+          todayVoteCount = myVotes.filter(v => v.created_at.startsWith(todayStr)).length;
+          myVotes.forEach(v => { votedCandidateCounts[v.candidate_id] = (votedCandidateCounts[v.candidate_id] || 0) + 1; });
+        }
+        const elections = db.elections.map(e => {
+          const candidates = db.election_candidates
+            .filter(c => c.election_id === e.id)
+            .sort((a, b) => b.vote_count - a.vote_count);
+          const now = new Date();
+          let status = 'active';
+          if (now < new Date(e.start_date)) status = 'upcoming';
+          else if (now > new Date(e.end_date)) status = 'ended';
+          return { ...e, status, candidates, total_votes: candidates.reduce((s, c) => s + c.vote_count, 0) };
+        });
+        return json({ elections, today_votes: todayVoteCount, votes_remaining: Math.max(0, 3 - todayVoteCount), voted_candidate_counts: votedCandidateCounts });
+      }
+
+      // GET /api/translate?q=...&to=zh-CN
+      if (path.startsWith('/api/translate')) {
+        const url = new URL(request.url);
+        const q = url.searchParams.get('q') || '';
+        const to = url.searchParams.get('to') || 'zh-CN';
+        if (!q) return json({ error: '缺少文本' }, 400);
+
+        // 分段翻译（每段<1800字符，避免URL过长）
+        const chunkSize = 1800;
+        const chunks = [];
+        let temp = q;
+        while (temp.length > 0) {
+          if (temp.length <= chunkSize) { chunks.push(temp); break; }
+          let cut = temp.lastIndexOf('.', chunkSize);
+          if (cut < 200) cut = temp.lastIndexOf('\n', chunkSize);
+          if (cut < 200) cut = temp.lastIndexOf(' ', chunkSize);
+          if (cut < 200) cut = chunkSize;
+          chunks.push(temp.substring(0, cut + 1));
+          temp = temp.substring(cut + 1);
+        }
+
+        const results = [];
+        for (const chunk of chunks) {
+          let translated = '';
+          // 最多重试3次
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const apiUrl = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=' + encodeURIComponent(to) + '&dt=t&q=' + encodeURIComponent(chunk);
+              const resp = await fetch(apiUrl, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0' } });
+              if (!resp.ok) { await new Promise(r => setTimeout(r, 500)); continue; }
+              const data = await resp.json();
+              if (data && data[0]) {
+                for (let i = 0; i < data[0].length; i++) {
+                  if (data[0][i] && data[0][i][0]) translated += data[0][i][0];
+                }
+              }
+              if (translated) break;
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          }
+          results.push(translated || chunk);
+        }
+        const finalTranslation = results.join('');
+        if (finalTranslation) return json({ translated: finalTranslation, source: 'google' });
+        return json({ error: '翻译服务暂时不可用，请稍后重试' }, 503);
       }
 
       // GET /api/stats
@@ -993,6 +1125,30 @@ async function handleRequest(request) {
         return json({ success: true });
       }
 
+      // DELETE /api/admin/comments/:id
+      if (m = path.match(/^\/api\/admin\/comments\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const commentId = parseInt(m[1]);
+        const comment = findById('comments', commentId);
+        if (!comment) return json({ error: '评论不存在' }, 404);
+        const db = getDB();
+        const postId = comment.post_id;
+        // 删除该评论的所有子回复
+        const replyIds = db.comments.filter(c => c.parent_id === commentId).map(c => c.id);
+        db.comment_likes = db.comment_likes.filter(cl => !replyIds.includes(cl.comment_id));
+        db.comments = db.comments.filter(c => c.parent_id !== commentId);
+        // 删除该评论的点赞
+        db.comment_likes = db.comment_likes.filter(cl => cl.comment_id !== commentId);
+        // 删除评论本身
+        db.comments = db.comments.filter(c => c.id !== commentId);
+        // 更新帖子评论数
+        const removedCount = 1 + replyIds.length;
+        increment('posts', postId, 'comment_count', -removedCount);
+        markDirty();
+        return json({ success: true, message: `已删除${removedCount}条评论` });
+      }
+
       // DELETE /api/admin/suggestions/:id
       if (m = path.match(/^\/api\/admin\/suggestions\/(\d+)$/)) {
         const { user, error } = requireAdmin(request);
@@ -1014,6 +1170,31 @@ async function handleRequest(request) {
         remove('announcements', annId);
         return json({ success: true, message: '公告已删除' });
       }
+
+      // DELETE /api/admin/elections/:id - 删除评选活动
+      if (m = path.match(/^\/api\/admin\/elections\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const electionId = parseInt(m[1]);
+        const db = getDB();
+        db.election_votes = db.election_votes.filter(v => v.election_id !== electionId);
+        db.election_candidates = db.election_candidates.filter(c => c.election_id !== electionId);
+        db.elections = db.elections.filter(e => e.id !== electionId);
+        markDirty();
+        return json({ success: true, message: '评选活动已删除' });
+      }
+
+      // DELETE /api/admin/candidates/:id - 删除候选人
+      if (m = path.match(/^\/api\/admin\/candidates\/(\d+)$/)) {
+        const { user, error } = requireAdmin(request);
+        if (error) return error;
+        const candidateId = parseInt(m[1]);
+        const db = getDB();
+        db.election_votes = db.election_votes.filter(v => v.candidate_id !== candidateId);
+        db.election_candidates = db.election_candidates.filter(c => c.id !== candidateId);
+        markDirty();
+        return json({ success: true, message: '候选人已删除' });
+      }
     }
 
     return json({ error: 'Not Found' }, 404);
@@ -1026,7 +1207,9 @@ export async function onRequest(context) {
   const { request, env, waitUntil } = context;
   setEnv(env);
   const response = await handleRequest(request);
-  // 写操作必须同步保存，确保数据落盘后才返回响应
-  await saveDB();
+  // 仅在有写操作时才保存数据库，GET 请求跳过保存
+  if (request.method !== 'GET') {
+    await saveDB();
+  }
   return response;
 }

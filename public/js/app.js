@@ -315,10 +315,97 @@ function toast(message, type = 'info') {
   el.className = `toast ${type}`;
   el.innerHTML = `<i class="fas fa-${icons[type]}"></i><span>${escapeHtml(message)}</span>`;
   container.appendChild(el);
-  setTimeout(() => {
-    el.classList.add('fade-out');
-    setTimeout(() => el.remove(), 300);
-  }, 3000);
+  setTimeout(() => { el.classList.add('fade-out'); setTimeout(() => el.remove(), 250); }, 2800);
+}
+
+// ===== 公告折叠 & 未读弹窗 =====
+function toggleAnnouncement(annId, btnEl) {
+  var body = document.getElementById('annBody-' + annId);
+  var btn = btnEl || (event && event.currentTarget ? event.currentTarget : document.querySelector('.announcement-banner[data-ann-id="' + annId + '"] .ann-toggle-btn'));
+  var icon = btn ? btn.querySelector('i') : null;
+  if (!body) return;
+  var isCollapsed = body.classList.toggle('ann-collapsed');
+  if (icon) {
+    icon.className = isCollapsed ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+  }
+  if (btn) btn.blur();
+}
+
+var _allAnnExpanded = false;
+function toggleAllAnnouncements() {
+  _allAnnExpanded = !_allAnnExpanded;
+  var container = document.getElementById('annContainer');
+  if (!container) return;
+  var banners = container.querySelectorAll('.announcement-banner');
+  var moreText = document.getElementById('annMoreText');
+  var moreIcon = document.getElementById('annMoreIcon');
+  // 隐藏的公告（index >= 2）
+  for (var i = 2; i < banners.length; i++) {
+    banners[i].style.display = _allAnnExpanded ? 'flex' : 'none';
+  }
+  if (moreText) moreText.textContent = _allAnnExpanded ? '收起公告' : ('查看全部 ' + banners.length + ' 条公告');
+  if (moreIcon) moreIcon.className = _allAnnExpanded ? 'fas fa-chevron-up' : 'fas fa-chevron-down';
+}
+
+// 未读公告弹窗
+function _getReadAnnouncements() {
+  try { return JSON.parse(localStorage.getItem('readAnnouncements') || '[]'); } catch(e) { return []; }
+}
+function _markAnnouncementRead(annId) {
+  var read = _getReadAnnouncements();
+  if (read.indexOf(annId) === -1) {
+    read.push(annId);
+    localStorage.setItem('readAnnouncements', JSON.stringify(read));
+  }
+}
+function _markAllAnnouncementsRead(announcements) {
+  var read = _getReadAnnouncements();
+  announcements.forEach(function(a) { if (read.indexOf(a.id) === -1) read.push(a.id); });
+  localStorage.setItem('readAnnouncements', JSON.stringify(read));
+}
+
+function showAnnouncementPopup(announcements) {
+  if (!announcements || announcements.length === 0) return;
+  var read = _getReadAnnouncements();
+  var unread = announcements.filter(function(a) { return read.indexOf(a.id) === -1; });
+  if (unread.length === 0) return;
+
+  var overlay = document.createElement('div');
+  overlay.className = 'ann-popup-overlay';
+  overlay.innerHTML = '<div class="ann-popup">' +
+    '<div class="ann-popup-header">' +
+      '<i class="fas fa-bullhorn"></i>' +
+      '<span>' + (unread.length === 1 ? '新公告' : unread.length + ' 条新公告') + '</span>' +
+      '<button class="ann-popup-close" onclick="this.parentElement.parentElement.remove()"><i class="fas fa-times"></i></button>' +
+    '</div>' +
+    '<div class="ann-popup-body">' +
+      unread.map(function(a) {
+        return '<div class="ann-popup-item">' +
+          '<div class="ann-popup-title">' + escapeHtml(a.title) + '</div>' +
+          '<div class="ann-popup-text">' + escapeHtml(a.content) + '</div>' +
+          '<div class="ann-popup-time"><i class="fas fa-clock"></i> ' + formatTime(a.created_at) + ' · ' + escapeHtml(a.author && a.author.nickname || '管理员') + '</div>' +
+        '</div>';
+      }).join('') +
+    '</div>' +
+    '<div class="ann-popup-footer">' +
+      '<button class="btn btn-primary ann-popup-ok" onclick="_closeAnnPopup()">我知道了</button>' +
+    '</div>' +
+  '</div>';
+  document.body.appendChild(overlay);
+  // 动画
+  requestAnimationFrame(function() { overlay.classList.add('show'); });
+}
+
+function _closeAnnPopup() {
+  var overlay = document.querySelector('.ann-popup-overlay');
+  if (overlay) {
+    overlay.classList.remove('show');
+    setTimeout(function() { overlay.remove(); }, 300);
+  }
+  // 标记所有已读
+  API.get('/api/announcements').then(function(d) {
+    if (d.announcements) _markAllAnnouncementsRead(d.announcements);
+  }).catch(function(){});
 }
 
 function navigate(path) {
@@ -827,6 +914,10 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
   }
   if (annRes.status === 'fulfilled') {
     announcements = annRes.value.announcements || [];
+    // 触发未读公告弹窗（仅在首页且非搜索/分类时）
+    if (announcements.length > 0 && !search && category === 'all' && sort === 'latest') {
+      setTimeout(function() { showAnnouncementPopup(announcements); }, 800);
+    }
   }
 
   const sortTabs = [
@@ -851,16 +942,33 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
         `).join('')}
       </div>
     </div>
-    ${announcements.length > 0 ? announcements.slice(0, 2).map(a => `
-      <div class="glass announcement-banner">
-        <i class="fas fa-bullhorn ann-icon"></i>
-        <div class="ann-content">
-          <div class="ann-title">${escapeHtml(a.title)}</div>
-          <div class="ann-text">${escapeHtml(a.content)}</div>
-          <div class="ann-time">${formatTime(a.created_at)} · ${escapeHtml(a.author?.nickname || '管理员')}</div>
-        </div>
+    ${announcements.length > 0 ? `
+      <div class="announcement-container" id="annContainer">
+        ${announcements.slice(0, 2).map((a, idx) => `
+          <div class="glass announcement-banner ${idx === 0 ? 'ann-primary' : ''}" data-ann-id="${a.id}">
+            <i class="fas fa-bullhorn ann-icon"></i>
+            <div class="ann-content">
+              <div class="ann-header">
+                <div class="ann-title">${escapeHtml(a.title)}</div>
+                <button class="ann-toggle-btn" onclick="toggleAnnouncement(${a.id}, this)" title="折叠/展开">
+                  <i class="fas fa-chevron-up"></i>
+                </button>
+              </div>
+              <div class="ann-body" id="annBody-${a.id}">
+                <div class="ann-text">${escapeHtml(a.content)}</div>
+                <div class="ann-time"><i class="fas fa-clock"></i> ${formatTime(a.created_at)} · ${escapeHtml(a.author?.nickname || '管理员')}</div>
+              </div>
+            </div>
+          </div>
+        `).join('')}
+        ${announcements.length > 2 ? `
+          <button class="ann-show-more" onclick="toggleAllAnnouncements()">
+            <span id="annMoreText">查看全部 ${announcements.length} 条公告</span>
+            <i class="fas fa-chevron-down" id="annMoreIcon"></i>
+          </button>
+        ` : ''}
       </div>
-    `).join('') : ''}
+    ` : ''}
     <div id="postList">${renderPostList(displayPosts)}</div>
     ${posts.length > displayPosts.length ? `
       <div style="text-align:center;margin-top:16px">
@@ -2855,34 +2963,47 @@ function renderAdminAnnounceForm() {
   if (!announcements_global || announcements_global.length === 0) {
     API.get('/api/announcements').then(function(ad) {
       announcements_global = ad.announcements || [];
-      if (announcements_global.length > 0) render();
+      render();
     }).catch(function() {});
   }
   return `
-    <div style="max-width:500px">
+    <div style="max-width:600px">
+      <h3 style="margin-bottom:12px"><i class="fas fa-bullhorn" style="color:var(--c-gold)"></i> 发布新公告</h3>
       <div class="form-group">
         <label class="form-label">公告标题</label>
         <input type="text" class="form-input" id="annTitle" placeholder="输入公告标题">
       </div>
       <div class="form-group">
         <label class="form-label">公告内容</label>
-        <textarea class="form-input" id="annContent" placeholder="输入公告内容" rows="5"></textarea>
+        <textarea class="form-input" id="annContent" placeholder="输入公告内容（支持换行）" rows="5"></textarea>
       </div>
-      <button class="btn btn-primary" onclick="createAnnouncement()"><i class="fas fa-bullhorn"></i> 发布公告</button>
-    </div>
-    ${announcements_global && announcements_global.length ? `
-      <h3 style="margin-top:24px;margin-bottom:12px">历史公告</h3>
-      ${announcements_global.map(a => `
-        <div class="glass" style="padding:14px;margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <div style="font-weight:700;font-size:0.88rem">${escapeHtml(a.title)}</div>
-            <button class="admin-delete-btn" onclick="adminDeleteAnnouncement(${a.id})" title="删除公告"><i class="fas fa-trash"></i></button>
-          </div>
-          <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:4px">${escapeHtml(a.content)}</div>
-          <div style="font-size:0.72rem;color:var(--text-tertiary);margin-top:4px">${formatTime(a.created_at)}</div>
+      <button class="btn btn-primary" onclick="createAnnouncement()"><i class="fas fa-paper-plane"></i> 发布公告</button>
+      
+      <h3 style="margin-top:28px;margin-bottom:12px">
+        <i class="fas fa-list" style="color:var(--c-gold)"></i> 公告管理
+        ${announcements_global && announcements_global.length ? '<span style="font-size:0.8rem;color:var(--text-tertiary);font-weight:400">（共 ' + announcements_global.length + ' 条）</span>' : ''}
+      </h3>
+      ${announcements_global && announcements_global.length ? `
+        <div class="admin-ann-list">
+          ${announcements_global.map(a => `
+            <div class="glass admin-ann-item">
+              <div class="admin-ann-header">
+                <div class="admin-ann-title">${escapeHtml(a.title)}</div>
+                <button class="admin-delete-btn admin-ann-delete" onclick="adminDeleteAnnouncement(${a.id})" title="删除公告">
+                  <i class="fas fa-trash"></i> 删除
+                </button>
+              </div>
+              <div class="admin-ann-content">${escapeHtml(a.content)}</div>
+              <div class="admin-ann-meta">
+                <i class="fas fa-clock"></i> ${formatTime(a.created_at)}
+                ${a.author ? ' · ' + escapeHtml(a.author.nickname || '管理员') : ''}
+                <span class="admin-ann-id">#${a.id}</span>
+              </div>
+            </div>
+          `).join('')}
         </div>
-      `).join('')}
-    ` : ''}
+      ` : '<div class="empty-state" style="padding:20px;text-align:center;color:var(--text-tertiary)">暂无公告</div>'}
+    </div>
   `;
 }
 
