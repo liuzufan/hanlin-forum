@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Allow: /api/posts
+Allow: /api/categories
+Allow: /api/announcements
+Disallow: /api/auth/
+Disallow: /api/admin/
+Disallow: /api/user/
+Disallow: /api/translate
+
+Sitemap: https://hanlin-forum.pages.dev/sitemap.xml

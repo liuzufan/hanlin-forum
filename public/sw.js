@@ -1,10 +1,12 @@
-// 翰林校园论坛 Service Worker v25
-const CACHE_NAME = 'hanlin-v25';
+// 翰林校园论坛 Service Worker v26
+const CACHE_NAME = 'hanlin-v26';
 const STATIC_ASSETS = [
   '/',
   '/css/style.css?v=24',
-  '/js/app.js?v=25',
-  '/manifest.json'
+  '/js/app.js?v=26',
+  '/manifest.json',
+  '/robots.txt',
+  '/sitemap.xml'
 ];
 
 const API_CACHE_TTL = {

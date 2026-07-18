@@ -780,7 +780,7 @@ function renderPostList(posts, loading = false) {
           <span class="post-meta-item"><i class="far fa-clock"></i> ${formatTime(post.created_at)}</span>
           <span class="post-meta-item"><i class="far fa-eye"></i> ${post.views}</span>
           <span class="post-meta-item ${post.liked ? 'liked' : ''}" style="cursor:pointer" onclick="event.stopPropagation();quickLikePost(${post.id}, this)"><i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}</span>
-          <span class="post-meta-item ${post.voted === 1 ? 'voted-up' : ''}"><i class="fas fa-arrow-up"></i> ${post.upvotes - post.downvotes}</span>
+          <span class="post-meta-item ${post.voted === 1 ? 'voted-up' : ''}"><i class="fas fa-thumbs-up"></i> ${post.upvotes - post.downvotes}</span>
           <span class="post-meta-item"><i class="far fa-comment"></i> ${post.comment_count}</span>
         </div>
       </div>
@@ -979,18 +979,18 @@ async function renderPostDetail(postId) {
       ` : ''}
       ${renderPoll(post)}
       <div class="post-detail-actions">
-        <div class="vote-group">
-          <button class="vote-btn ${post.voted === 1 ? 'active up' : ''}" onclick="votePost(${post.id}, 1)">
-            <i class="fas fa-arrow-up"></i> 赞
-          </button>
-          <span class="vote-score">${post.upvotes - post.downvotes}</span>
-          <button class="vote-btn ${post.voted === -1 ? 'active down' : ''}" onclick="votePost(${post.id}, -1)">
-            <i class="fas fa-arrow-down"></i> 踩
-          </button>
-        </div>
         <button class="action-btn ${post.liked ? 'active like' : ''}" onclick="likePost(${post.id}, this)">
           <i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}
         </button>
+        <div class="vote-group">
+          <button class="vote-btn ${post.voted === 1 ? 'active up' : ''}" onclick="votePost(${post.id}, 1, this)">
+            <i class="fas fa-arrow-up"></i> 支持
+          </button>
+          <span class="vote-score">${post.upvotes - post.downvotes}</span>
+          <button class="vote-btn ${post.voted === -1 ? 'active down' : ''}" onclick="votePost(${post.id}, -1, this)">
+            <i class="fas fa-arrow-down"></i> 反对
+          </button>
+        </div>
         <button class="action-btn ${post.favorited ? 'active fav' : ''}" onclick="favoritePost(${post.id}, this)">
           <i class="${post.favorited ? 'fas' : 'far'} fa-bookmark"></i> ${post.favorited ? '已收藏' : '收藏'}
         </button>
@@ -1941,20 +1941,17 @@ async function likePost(postId, btn) {
   }
 }
 
-async function votePost(postId, voteType) {
+async function votePost(postId, voteType, btn) {
   if (!requireAuth('投票')) return;
   if (!state.user) { navigate('/login'); return; }
 
-  // 乐观更新
   var post = state.currentPost;
   if (post && post.id === postId) {
     var wasVoted = post.voted;
     var oldUpvotes = post.upvotes;
     var oldDownvotes = post.downvotes;
 
-    // 计算新投票状态
     if (wasVoted === voteType) {
-      // 取消投票
       post.voted = 0;
       if (voteType === 1) post.upvotes--;
       else post.downvotes--;
@@ -1962,17 +1959,30 @@ async function votePost(postId, voteType) {
       post.voted = voteType;
       if (voteType === 1) {
         post.upvotes++;
-        if (wasVoted === 2) post.downvotes--;
+        if (wasVoted === -1) post.downvotes--;
       } else {
         post.downvotes++;
         if (wasVoted === 1) post.upvotes--;
       }
     }
 
-    // 立即更新UI
-    var netVotes = post.upvotes - post.downvotes;
-    var voteEl = document.querySelector('.post-vote-bar, .vote-score');
-    if (voteEl) voteEl.textContent = netVotes;
+    // 局部更新分数和按钮状态
+    var scoreEl = document.querySelector('.vote-score');
+    if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
+
+    // 更新投票按钮的 active 状态
+    var voteBtns = document.querySelectorAll('.vote-btn');
+    voteBtns.forEach(function(vb) {
+      var isUpBtn = vb.textContent.includes('支持') || vb.querySelector('.fa-arrow-up');
+      var isDownBtn = vb.textContent.includes('反对') || vb.querySelector('.fa-arrow-down');
+      if (isUpBtn) {
+        vb.classList.toggle('active', post.voted === 1);
+        vb.classList.toggle('up', post.voted === 1);
+      } else if (isDownBtn) {
+        vb.classList.toggle('active', post.voted === -1);
+        vb.classList.toggle('down', post.voted === -1);
+      }
+    });
 
     // 后台同步
     try {
@@ -1980,13 +1990,25 @@ async function votePost(postId, voteType) {
       post.voted = data.voted;
       post.upvotes = data.upvotes;
       post.downvotes = data.downvotes;
+      if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
       IDB.delByPrefix('api:/api/posts');
     } catch (e) {
-      // 回滚
       post.voted = wasVoted;
       post.upvotes = oldUpvotes;
       post.downvotes = oldDownvotes;
-      render();
+      if (scoreEl) scoreEl.textContent = post.upvotes - post.downvotes;
+      // 回滚按钮状态
+      voteBtns.forEach(function(vb) {
+        var isUpBtn = vb.querySelector('.fa-arrow-up');
+        var isDownBtn = vb.querySelector('.fa-arrow-down');
+        if (isUpBtn) {
+          vb.classList.toggle('active', wasVoted === 1);
+          vb.classList.toggle('up', wasVoted === 1);
+        } else if (isDownBtn) {
+          vb.classList.toggle('active', wasVoted === -1);
+          vb.classList.toggle('down', wasVoted === -1);
+        }
+      });
       toast(e.message || '投票失败', 'error');
     }
   } else {

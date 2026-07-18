@@ -243,24 +243,27 @@ async function handleRequest(request) {
         if (![1, -1].includes(vote_type)) return json({ error: '无效的投票类型' }, 400);
         const postId = parseInt(m[1]);
         const existing = findOne('post_votes', { post_id: postId, user_id: user.id });
-        const post = findById('posts', postId);
+        let post = findById('posts', postId);
         if (!post) return json({ error: '帖子不存在' }, 404);
         if (existing) {
           if (existing.vote_type === vote_type) {
             remove('post_votes', { post_id: postId, user_id: user.id });
             if (vote_type === 1) increment('posts', postId, 'upvotes', -1);
             else increment('posts', postId, 'downvotes', -1);
+            post = findById('posts', postId);
             return json({ voted: 0, upvotes: post.upvotes, downvotes: post.downvotes });
           } else {
             update('post_votes', existing.id, { vote_type });
             if (vote_type === 1) { increment('posts', postId, 'upvotes', 1); increment('posts', postId, 'downvotes', -1); }
             else { increment('posts', postId, 'upvotes', -1); increment('posts', postId, 'downvotes', 1); }
+            post = findById('posts', postId);
             return json({ voted: vote_type, upvotes: post.upvotes, downvotes: post.downvotes });
           }
         } else {
           insert('post_votes', { post_id: postId, user_id: user.id, vote_type, created_at: new Date().toISOString() });
           if (vote_type === 1) increment('posts', postId, 'upvotes', 1);
           else increment('posts', postId, 'downvotes', 1);
+          post = findById('posts', postId);
           return json({ voted: vote_type, upvotes: post.upvotes, downvotes: post.downvotes });
         }
       }
