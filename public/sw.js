@@ -1,22 +1,20 @@
-// 翰林校园论坛 Service Worker v23
-const CACHE_NAME = 'hanlin-v23';
+// 翰林校园论坛 Service Worker v24
+const CACHE_NAME = 'hanlin-v24';
 const STATIC_ASSETS = [
   '/',
-  '/css/style.css?v=22',
-  '/js/app.js?v=23',
+  '/css/style.css?v=23',
+  '/js/app.js?v=24',
   '/manifest.json'
 ];
 
-// API缓存策略：stale-while-revalidate
 const API_CACHE_TTL = {
-  '/api/posts': 3 * 60 * 1000,       // 帖子列表 3分钟
-  '/api/categories': 60 * 60 * 1000,  // 分类 1小时
-  '/api/announcements': 5 * 60 * 1000,// 公告 5分钟
-  '/api/elections': 30 * 1000,        // 评选 30秒
-  '/api/suggestions': 2 * 60 * 1000,  // 建议 2分钟
+  '/api/posts': 3 * 60 * 1000,
+  '/api/categories': 60 * 60 * 1000,
+  '/api/announcements': 5 * 60 * 1000,
+  '/api/elections': 30 * 1000,
+  '/api/suggestions': 2 * 60 * 1000,
 };
 
-// 不缓存的API路径
 const NO_CACHE_API = [
   '/api/auth/', '/api/translate', '/api/admin/',
   '/api/notifications', '/api/user/', '/api/profile/', '/api/favorites',
@@ -65,13 +63,11 @@ self.addEventListener('fetch', function(event) {
   var isAPI = url.pathname.startsWith('/api/');
   var isTranslate = url.hostname.includes('translate.googleapis.com') || url.hostname.includes('mymemory.translated.net');
 
-  // 翻译API不缓存
   if (isTranslate) {
     event.respondWith(fetch(event.request));
     return;
   }
 
-  // API请求：stale-while-revalidate
   if (isAPI && shouldCacheAPI(url.pathname)) {
     var cacheKey = 'api:' + url.pathname + url.search;
     event.respondWith(
@@ -87,17 +83,14 @@ self.addEventListener('fetch', function(event) {
             return cachedResponse || new Response('{"error":"网络不可用"}', { status: 503, headers: { 'Content-Type': 'application/json' } });
           });
 
-          // 如果有缓存且未过期，返回缓存；否则返回网络请求
           if (cachedResponse) {
             var cachedDate = cachedResponse.headers.get('date');
             var age = cachedDate ? Date.now() - new Date(cachedDate).getTime() : Infinity;
             var ttl = getAPITTL(url.pathname);
             if (age < ttl) {
-              // 缓存新鲜，直接返回（后台仍刷新）
               fetchPromise.catch(function() {});
               return cachedResponse;
             }
-            // 缓存过期，返回缓存但后台刷新
             return cachedResponse;
           }
           return fetchPromise;
@@ -107,13 +100,11 @@ self.addEventListener('fetch', function(event) {
     return;
   }
 
-  // 非缓存API直接透传
   if (isAPI) {
     event.respondWith(fetch(event.request));
     return;
   }
 
-  // 静态资源：cache-first
   event.respondWith(
     caches.match(event.request).then(function(cached) {
       return cached || fetch(event.request).then(function(response) {

@@ -309,7 +309,14 @@ function toast(message, type = 'info') {
 }
 
 function navigate(path) {
-  window.location.hash = path;
+  // 使用 View Transitions API 实现丝滑页面切换
+  if (document.startViewTransition) {
+    document.startViewTransition(function() {
+      window.location.hash = path;
+    });
+  } else {
+    window.location.hash = path;
+  }
 }
 
 function getRoute() {
@@ -779,7 +786,7 @@ function renderPostList(posts, loading = false) {
           </div>
           <span class="post-meta-item"><i class="far fa-clock"></i> ${formatTime(post.created_at)}</span>
           <span class="post-meta-item"><i class="far fa-eye"></i> ${post.views}</span>
-          <span class="post-meta-item ${post.liked ? 'liked' : ''}"><i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}</span>
+          <span class="post-meta-item ${post.liked ? 'liked' : ''}" style="cursor:pointer" onclick="event.stopPropagation();quickLikePost(${post.id}, this)"><i class="${post.liked ? 'fas' : 'far'} fa-heart"></i> ${post.likes}</span>
           <span class="post-meta-item ${post.voted === 1 ? 'voted-up' : ''}"><i class="fas fa-arrow-up"></i> ${post.upvotes - post.downvotes}</span>
           <span class="post-meta-item"><i class="far fa-comment"></i> ${post.comment_count}</span>
         </div>
@@ -1841,29 +1848,165 @@ function renderCategoriesPage() {
 }
 
 // ===== Actions =====
+// 首页快速点赞（乐观更新：立即更新UI，后台同步）
+async function quickLikePost(postId, el) {
+  if (!requireAuth('点赞')) return;
+  if (!state.user) { navigate('/login'); return; }
+
+  // 找到帖子数据
+  var post = state.posts.find(function(p) { return p.id === postId; });
+  if (!post) return;
+
+  // 乐观更新：立即切换UI状态
+  var wasLiked = post.liked;
+  post.liked = !wasLiked;
+  post.likes += wasLiked ? -1 : 1;
+
+  // 立即更新DOM（不触发完整render）
+  if (el) {
+    var icon = el.querySelector('i');
+    if (icon) {
+      icon.className = post.liked ? 'fas fa-heart' : 'far fa-heart';
+      // 点赞动画
+      icon.style.transform = 'scale(1.4)';
+      icon.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+      setTimeout(function() { icon.style.transform = 'scale(1)'; }, 200);
+    }
+    el.classList.toggle('liked', post.liked);
+    // 更新数字
+    el.innerHTML = el.innerHTML.replace(/\d+$/, post.likes);
+    // 重新设置图标（因为innerHTML替换了）
+    var newIcon = el.querySelector('i');
+    if (newIcon) {
+      newIcon.style.transform = 'scale(1.4)';
+      newIcon.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+      setTimeout(function() { newIcon.style.transform = 'scale(1)'; }, 200);
+    }
+  }
+
+  // 后台同步到服务器
+  try {
+    await API.post('/api/posts/' + postId + '/like');
+    // 成功后静默刷新缓存
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 失败回滚
+    post.liked = wasLiked;
+    post.likes += wasLiked ? 1 : -1;
+    toast(e.message || '点赞失败', 'error');
+    // 回滚UI
+    if (el) {
+      var icon2 = el.querySelector('i');
+      if (icon2) icon2.className = wasLiked ? 'fas fa-heart' : 'far fa-heart';
+      el.classList.toggle('liked', wasLiked);
+      el.innerHTML = el.innerHTML.replace(/\d+$/, post.likes);
+    }
+  }
+}
+
 async function likePost(postId) {
   if (!requireAuth('点赞')) return;
+  if (!state.user) { navigate('/login'); return; }
+
+  // 乐观更新
+  var post = state.currentPost;
+  if (post && post.id === postId) {
+    var wasLiked = post.liked;
+    post.liked = !wasLiked;
+    post.likes += wasLiked ? -1 : 1;
+
+    // 立即更新按钮（不重新渲染整个页面）
+    var btn = document.querySelector('.action-btn.like');
+    if (btn) {
+      btn.classList.toggle('active', post.liked);
+      var icon = btn.querySelector('i');
+      if (icon) {
+        icon.className = post.liked ? 'fas fa-heart' : 'far fa-heart';
+        icon.style.transform = 'scale(1.4)';
+        icon.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+        setTimeout(function() { icon.style.transform = 'scale(1)'; }, 200);
+      }
+      btn.innerHTML = '<i class="' + (post.liked ? 'fas' : 'far') + ' fa-heart" style="transform:scale(1.4);transition:transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)"></i> ' + post.likes;
+      setTimeout(function() {
+        var i = btn.querySelector('i');
+        if (i) i.style.transform = 'scale(1)';
+      }, 200);
+    }
+  }
+
+  // 后台同步
   try {
-    const data = await API.post(`/api/posts/${postId}/like`);
-    if (state.currentPost && state.currentPost.id === postId) {
-      state.currentPost.liked = data.liked;
-      state.currentPost.likes = data.likes;
+    const data = await API.post('/api/posts/' + postId + '/like');
+    // 确保状态与服务端一致
+    if (post && post.id === postId) {
+      post.liked = data.liked;
+      post.likes = data.likes;
+    }
+    IDB.delByPrefix('api:/api/posts');
+  } catch (e) {
+    // 回滚
+    if (post && post.id === postId) {
+      post.liked = wasLiked;
+      post.likes += wasLiked ? 1 : -1;
       render();
     }
-  } catch (e) { toast(e.message, 'error'); }
+    toast(e.message || '点赞失败', 'error');
+  }
 }
 
 async function votePost(postId, voteType) {
   if (!requireAuth('投票')) return;
-  try {
-    const data = await API.post(`/api/posts/${postId}/vote`, { vote_type: voteType });
-    if (state.currentPost && state.currentPost.id === postId) {
-      state.currentPost.voted = data.voted;
-      state.currentPost.upvotes = data.upvotes;
-      state.currentPost.downvotes = data.downvotes;
-      render();
+  if (!state.user) { navigate('/login'); return; }
+
+  // 乐观更新
+  var post = state.currentPost;
+  if (post && post.id === postId) {
+    var wasVoted = post.voted;
+    var oldUpvotes = post.upvotes;
+    var oldDownvotes = post.downvotes;
+
+    // 计算新投票状态
+    if (wasVoted === voteType) {
+      // 取消投票
+      post.voted = 0;
+      if (voteType === 1) post.upvotes--;
+      else post.downvotes--;
+    } else {
+      post.voted = voteType;
+      if (voteType === 1) {
+        post.upvotes++;
+        if (wasVoted === 2) post.downvotes--;
+      } else {
+        post.downvotes++;
+        if (wasVoted === 1) post.upvotes--;
+      }
     }
-  } catch (e) { toast(e.message, 'error'); }
+
+    // 立即更新UI
+    var netVotes = post.upvotes - post.downvotes;
+    var voteEl = document.querySelector('.post-vote-bar, .vote-score');
+    if (voteEl) voteEl.textContent = netVotes;
+
+    // 后台同步
+    try {
+      const data = await API.post('/api/posts/' + postId + '/vote', { vote_type: voteType });
+      post.voted = data.voted;
+      post.upvotes = data.upvotes;
+      post.downvotes = data.downvotes;
+      IDB.delByPrefix('api:/api/posts');
+    } catch (e) {
+      // 回滚
+      post.voted = wasVoted;
+      post.upvotes = oldUpvotes;
+      post.downvotes = oldDownvotes;
+      render();
+      toast(e.message || '投票失败', 'error');
+    }
+  } else {
+    try {
+      await API.post('/api/posts/' + postId + '/vote', { vote_type: voteType });
+    } catch (e) { toast(e.message, 'error'); }
+  }
 }
 
 async function favoritePost(postId) {
@@ -2191,20 +2334,23 @@ var _renderTimer = null;
 var _isRendering = false;
 
 function render() {
-  // 防抖：快速连续调用时只执行最后一次
-  if (_renderTimer) clearTimeout(_renderTimer);
+  // 防抖：使用 requestAnimationFrame 确保在下一帧渲染，避免丢帧
+  if (_renderTimer) cancelAnimationFrame(_renderTimer);
   return new Promise(function(resolve) {
-    _renderTimer = setTimeout(async function() {
+    _renderTimer = requestAnimationFrame(function() {
       _renderTimer = null;
       if (_isRendering) { resolve(); return; }
       _isRendering = true;
-      try {
-        await _doRender();
-      } finally {
-        _isRendering = false;
-      }
-      resolve();
-    }, 50);
+      // 使用 microtask 确保状态更新已完成
+      Promise.resolve().then(async function() {
+        try {
+          await _doRender();
+        } finally {
+          _isRendering = false;
+        }
+        resolve();
+      });
+    });
   });
 }
 
