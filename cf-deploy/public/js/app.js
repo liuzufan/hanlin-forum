@@ -667,16 +667,26 @@ function renderSidebar() {
 async function renderRightSidebar() {
   if (window.innerWidth < 1024) return '';
   
-  let stats = { users: 0, posts: 0, comments: 0 };
-  try {
-    stats = await API.get('/api/stats');
-  } catch {}
+  // 使用缓存的统计数据，5分钟刷新一次
+  let stats = _statsCache || { users: 0, posts: 0, comments: 0 };
+  var now = Date.now();
+  if (!_statsCache || (now - _statsCacheTime) > 5 * 60 * 1000) {
+    // 后台静默刷新，不阻塞渲染
+    API.get('/api/stats').then(function(data) {
+      _statsCache = data;
+      _statsCacheTime = Date.now();
+      // 只更新右侧栏的统计数字，不触发全量渲染
+      _updateStatsDisplay(data);
+    }).catch(function() {});
+  }
 
   let trending = state.posts.slice(0, 5);
   if (trending.length === 0 && state.posts.length === 0) {
+    // 使用缓存的热门帖子，不阻塞渲染
     try {
       const data = await API.get('/api/posts?sort=hot&limit=5');
       trending = data.posts;
+      state.posts = trending; // 缓存到state供下次使用
     } catch {}
   }
 
@@ -1968,6 +1978,19 @@ async function renderNotifications() {
   `;
 }
 
+// 只更新右侧栏统计数字（不触发全量渲染）
+function _updateStatsDisplay(stats) {
+  if (!stats) return;
+  var card = document.querySelector('.stats-card');
+  if (!card) return;
+  var values = card.querySelectorAll('.stat-value');
+  if (values.length >= 3) {
+    if (stats.users != null) values[0].textContent = stats.users;
+    if (stats.posts != null) values[1].textContent = stats.posts;
+    if (stats.comments != null) values[2].textContent = stats.comments;
+  }
+}
+
 // ===== Render: Categories Page (mobile) =====
 function renderCategoriesPage() {
   return `
@@ -2582,6 +2605,10 @@ async function loadNotifications() {
 // ===== Router =====
 var _renderTimer = null;
 var _isRendering = false;
+var _shellBuilt = false;       // Shell是否已构建
+var _lastShellKey = '';         // 上次Shell的key（用于判断是否需要重建）
+var _statsCache = null;         // 右侧栏统计缓存
+var _statsCacheTime = 0;        // 统计缓存时间
 
 function render() {
   // 防抖：使用 requestAnimationFrame 确保在下一帧渲染，避免丢帧
@@ -2591,7 +2618,6 @@ function render() {
       _renderTimer = null;
       if (_isRendering) { resolve(); return; }
       _isRendering = true;
-      // 使用 microtask 确保状态更新已完成
       Promise.resolve().then(async function() {
         try {
           await _doRender();
@@ -2611,9 +2637,10 @@ async function _doRender() {
 
   app.dataset.route = route;
 
-  // Auth page
+  // Auth page - 直接渲染，不需要shell
   if (route.startsWith('/login')) {
     app.innerHTML = renderAuthPage();
+    _shellBuilt = false;
     return;
   }
 
@@ -2622,50 +2649,103 @@ async function _doRender() {
     await checkAuth();
   }
 
+  // 生成内容HTML
+  content = await _renderRouteContent(route);
+
+  // 计算shell key：只在用户状态变化时重建shell
+  var shellKey = (state.user ? state.user.id : 'guest') + '|' + (state.isGuest ? '1' : '0') + '|' + state.unreadCount;
+  var needShellRebuild = !_shellBuilt || shellKey !== _lastShellKey;
+
+  if (needShellRebuild) {
+    // 需要重建完整shell（首次加载或用户状态变化）
+    app.innerHTML = await renderShell(content);
+    _shellBuilt = true;
+    _lastShellKey = shellKey;
+  } else {
+    // 只更新内容区，不重建shell！这是性能关键优化
+    var mainContent = document.getElementById('mainContent');
+    if (mainContent) {
+      mainContent.innerHTML = content;
+      // 更新导航高亮
+      _updateNavActive(route);
+    } else {
+      // fallback：如果找不到mainContent就全量重建
+      app.innerHTML = await renderShell(content);
+    }
+  }
+  window.scrollTo(0, 0);
+}
+
+// 路由内容渲染（不含shell）
+async function _renderRouteContent(route) {
   // Route matching
   if (route === '/' || route === '/latest' || route === '/hot' || route === '/top') {
     const sort = route === '/hot' ? 'hot' : route === '/top' ? 'top' : state.currentSort;
-    content = await renderHomePage(sort, 'all', '');
+    return await renderHomePage(sort, 'all', '');
   } else if (route.startsWith('/category/')) {
     const slug = route.split('/')[2];
-    content = await renderHomePage(state.currentSort, slug, '');
+    return await renderHomePage(state.currentSort, slug, '');
   } else if (route.startsWith('/search')) {
     const q = new URLSearchParams(route.split('?')[1]).get('q') || '';
-    content = await renderHomePage('latest', 'all', q);
+    return await renderHomePage('latest', 'all', q);
   } else if (route.startsWith('/post/')) {
     const id = route.split('/')[2];
-    content = await renderPostDetail(id);
+    return await renderPostDetail(id);
   } else if (route === '/create') {
-    content = renderCreatePost();
+    return renderCreatePost();
   } else if (route.startsWith('/profile/')) {
     const id = route.split('/')[2];
-    content = await renderProfile(id);
+    return await renderProfile(id);
   } else if (route === '/profile') {
-    content = await renderProfile();
+    return await renderProfile();
   } else if (route === '/favorites') {
-    content = await renderFavorites();
+    return await renderFavorites();
   } else if (route === '/suggestions') {
-    content = await renderSuggestionsPage();
+    return await renderSuggestionsPage();
   } else if (route === '/elections' || route.startsWith('/elections/')) {
-    content = await renderElectionsPage();
+    return await renderElectionsPage();
   } else if (route === '/create-suggestion') {
-    content = renderCreateSuggestion();
+    return renderCreateSuggestion();
   } else if (route === '/notifications') {
-    content = await renderNotifications();
+    return await renderNotifications();
   } else if (route === '/categories') {
-    content = renderCategoriesPage();
+    return renderCategoriesPage();
   } else if (route === '/admin') {
     if (!state.user || state.user.role !== 'admin') {
-      content = `<div class="empty-state glass"><div class="empty-icon"><i class="fas fa-lock"></i></div><h3>权限不足</h3><p>仅管理员可访问</p><button class="btn btn-primary" style="margin-top:16px" onclick="navigate('/')">返回首页</button></div>`;
+      return `<div class="empty-state glass"><div class="empty-icon"><i class="fas fa-lock"></i></div><h3>权限不足</h3><p>仅管理员可访问</p><button class="btn btn-primary" style="margin-top:16px" onclick="navigate('/')">返回首页</button></div>`;
     } else {
-      content = await renderAdminPanel();
+      return await renderAdminPanel();
     }
   } else {
-    content = `<div class="empty-state glass"><div class="empty-icon"><i class="fas fa-compass"></i></div><h3>页面不存在</h3><button class="btn btn-primary" style="margin-top:16px" onclick="navigate('/')">返回首页</button></div>`;
+    return `<div class="empty-state glass"><div class="empty-icon"><i class="fas fa-compass"></i></div><h3>页面不存在</h3><button class="btn btn-primary" style="margin-top:16px" onclick="navigate('/')">返回首页</button></div>`;
   }
+}
 
-  app.innerHTML = await renderShell(content);
-  window.scrollTo(0, 0);
+// 更新导航高亮（不重建DOM）
+function _updateNavActive(route) {
+  // 侧边栏导航
+  document.querySelectorAll('.sidebar .nav-item').forEach(function(el) {
+    var onclick = el.getAttribute('onclick') || '';
+    var isActive = false;
+    if (route === '/' && onclick.includes("navigate('/')")) isActive = true;
+    else if (route === '/latest' && onclick.includes("navigate('/latest')")) isActive = true;
+    else if (route === '/suggestions' && onclick.includes("navigate('/suggestions')")) isActive = true;
+    else if (route === '/elections' && onclick.includes("navigate('/elections')")) isActive = true;
+    else if (route === '/admin' && onclick.includes("navigate('/admin')")) isActive = true;
+    else if (route.startsWith('/category/') && onclick.includes("navigate('/category/") && onclick.includes(route.split('/')[2])) isActive = true;
+    el.classList.toggle('active', isActive);
+  });
+  // 移动端导航
+  document.querySelectorAll('.mobile-nav-item').forEach(function(el) {
+    var onclick = el.getAttribute('onclick') || '';
+    var isActive = false;
+    if (route === '/' && onclick.includes("navigate('/')")) isActive = true;
+    else if (route.includes('/category/') && onclick.includes("navigate('/categories')")) isActive = true;
+    else if (route === '/suggestions' && onclick.includes("navigate('/suggestions')")) isActive = true;
+    else if (route === '/elections' && onclick.includes("navigate('/elections')")) isActive = true;
+    else if ((route === '/profile' || route.startsWith('/profile/')) && onclick.includes("navigate('/profile')")) isActive = true;
+    el.classList.toggle('active', isActive);
+  });
 }
 
 // ===== Admin Panel =====
@@ -2720,7 +2800,33 @@ async function renderAdminPanel() {
 
 function switchAdminTab(tab) {
   adminTab = tab;
-  render();
+  // 只更新tab高亮和内容区，不触发全量渲染
+  document.querySelectorAll('.admin-tab').forEach(function(el) {
+    var onclick = el.getAttribute('onclick') || '';
+    el.classList.toggle('active', onclick.includes("'" + tab + "'"));
+  });
+  // 异步更新内容区
+  _renderAdminContent();
+}
+
+async function _renderAdminContent() {
+  var contentDiv = document.getElementById('adminContent');
+  if (!contentDiv) { render(); return; }
+  var stats = (state.adminData && state.adminData.stats) || {};
+  var users = (state.adminData && state.adminData.users) || [];
+  var posts = (state.adminData && state.adminData.posts) || [];
+  
+  var html = '';
+  if (adminTab === 'dashboard') html = renderAdminDashboard(stats);
+  else if (adminTab === 'users') html = renderAdminUsers(users);
+  else if (adminTab === 'posts') html = renderAdminPosts(posts);
+  else if (adminTab === 'suggestions') html = await renderAdminSuggestions();
+  else if (adminTab === 'announce') html = renderAdminAnnounceForm();
+  else if (adminTab === 'poll') html = renderAdminPollForm(posts);
+  else if (adminTab === 'create-user') html = renderAdminCreateUser();
+  else if (adminTab === 'post-as-user') html = renderAdminPostAsUser();
+  
+  contentDiv.innerHTML = html;
 }
 
 function renderAdminDashboard(stats) {
