@@ -27,16 +27,132 @@ const state = {
 // 前后端同源部署（IGA Pages），API_BASE 始终为空字符串
 const API_BASE = '';
 
+// ===== IndexedDB 本地缓存 (方案B) =====
+var IDB = {
+  _db: null,
+  _ready: null,
+
+  init() {
+    if (this._ready) return this._ready;
+    this._ready = new Promise(function(resolve) {
+      try {
+        var req = indexedDB.open('hanlin_cache', 1);
+        req.onupgradeneeded = function(e) {
+          var db = e.target.result;
+          if (!db.objectStoreNames.contains('kv')) {
+            db.createObjectStore('kv', { keyPath: 'k' });
+          }
+        };
+        req.onsuccess = function(e) { IDB._db = e.target.result; resolve(); };
+        req.onerror = function() { resolve(); }; // 降级：无IndexedDB时不缓存
+      } catch (e) { resolve(); }
+    });
+    return this._ready;
+  },
+
+  async get(key) {
+    await this.init();
+    if (!this._db) return null;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readonly');
+        var req = tx.objectStore('kv').get(key);
+        req.onsuccess = function() { resolve(req.result ? req.result.v : null); };
+        req.onerror = function() { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+  },
+
+  async set(key, value) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put({ k: key, v: value, t: Date.now() });
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  },
+
+  async del(key) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        tx.objectStore('kv').delete(key);
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  },
+
+  // 按前缀批量删除（用于缓存失效）
+  async delByPrefix(prefix) {
+    await this.init();
+    if (!this._db) return;
+    return new Promise(function(resolve) {
+      try {
+        var tx = IDB._db.transaction('kv', 'readwrite');
+        var store = tx.objectStore('kv');
+        var req = store.getAllKeys();
+        req.onsuccess = function() {
+          var keys = req.result || [];
+          keys.forEach(function(k) {
+            if (typeof k === 'string' && k.startsWith(prefix)) {
+              store.delete(k);
+            }
+          });
+        };
+        tx.oncomplete = function() { resolve(); };
+        tx.onerror = function() { resolve(); };
+      } catch (e) { resolve(); }
+    });
+  }
+};
+
+// ===== 智能 API 层 (stale-while-revalidate) =====
+var _bgRefreshing = {};
+var _cacheTTL = {
+  '/api/posts': 3 * 60 * 1000,       // 帖子列表 3分钟
+  '/api/categories': 60 * 60 * 1000,  // 分类 1小时
+  '/api/announcements': 5 * 60 * 1000,// 公告 5分钟
+  '/api/elections': 30 * 1000,        // 评选 30秒
+  '/api/suggestions': 2 * 60 * 1000,  // 建议 2分钟
+};
+
+function _getTTL(url) {
+  for (var prefix in _cacheTTL) {
+    if (url.startsWith(prefix)) return _cacheTTL[prefix];
+  }
+  // 帖子详情和评论：2分钟
+  if (url.match(/^\/api\/posts\/\d+$/)) return 2 * 60 * 1000;
+  if (url.match(/^\/api\/posts\/\d+\/comments$/)) return 2 * 60 * 1000;
+  return 60 * 1000; // 默认1分钟
+}
+
+function _isCacheable(url) {
+  // 不缓存认证、翻译、用户相关API
+  if (url.startsWith('/api/auth/')) return false;
+  if (url.startsWith('/api/translate')) return false;
+  if (url.startsWith('/api/admin/')) return false;
+  if (url.startsWith('/api/notifications')) return false;
+  if (url.startsWith('/api/user/')) return false;
+  if (url.startsWith('/api/profile/')) return false;
+  if (url.startsWith('/api/favorites')) return false;
+  return true;
+}
+
 const API = {
   async request(url, options = {}) {
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (state.token) headers['X-Auth-Token'] = state.token;
     try {
       const res = await fetch(API_BASE + url, { ...options, headers });
-      // 检查响应类型，防止非 JSON 响应导致解析错误
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
-        // 服务器返回了非 JSON（可能是 HTML 错误页面）
         if (res.status === 405) throw new Error('服务器暂时不可用，请稍后重试');
         if (!res.ok) throw new Error('请求失败 (' + res.status + ')');
         throw new Error('服务器响应格式错误，请刷新页面重试');
@@ -60,16 +176,93 @@ const API = {
           navigate('/login');
         }
       }
-      // 网络错误
       if (e.name === 'TypeError' && e.message.includes('fetch')) {
         throw new Error('网络连接失败，请检查网络后重试');
       }
       throw e;
     }
   },
-  get: (url) => API.request(url),
-  post: (url, body) => API.request(url, { method: 'POST', body: JSON.stringify(body) }),
-  put: (url, body) => API.request(url, { method: 'PUT', body: JSON.stringify(body) }),
+
+  // 智能GET：先返回缓存，后台静默刷新
+  async get(url) {
+    if (!_isCacheable(url)) {
+      return this.request(url);
+    }
+    var cacheKey = 'api:' + url;
+    var cached = await IDB.get(cacheKey);
+    if (cached) {
+      var age = Date.now() - (cached.t || 0);
+      var ttl = _getTTL(url);
+      if (age < ttl) {
+        // 缓存新鲜，直接返回
+        return cached.v;
+      }
+      // 缓存过期，先返回旧数据，后台刷新
+      this._refreshBg(url, cacheKey);
+      return cached.v;
+    }
+    // 无缓存，从服务器获取
+    var data = await this.request(url);
+    await IDB.set(cacheKey, { v: data, t: Date.now() });
+    return data;
+  },
+
+  // 后台静默刷新
+  _refreshBg(url, cacheKey) {
+    if (_bgRefreshing[cacheKey]) return;
+    _bgRefreshing[cacheKey] = true;
+    var self = this;
+    this.request(url).then(function(data) {
+      IDB.set(cacheKey, { v: data, t: Date.now() });
+    }).catch(function() {}).then(function() {
+      _bgRefreshing[cacheKey] = false;
+    });
+  },
+
+  // 写操作：先请求服务器，成功后失效相关缓存
+  async post(url, body) {
+    var data = await this.request(url, { method: 'POST', body: JSON.stringify(body) });
+    this._invalidate(url, body);
+    return data;
+  },
+
+  async put(url, body) {
+    var data = await this.request(url, { method: 'PUT', body: JSON.stringify(body) });
+    this._invalidate(url, body);
+    return data;
+  },
+
+  async delete(url) {
+    var data = await this.request(url, { method: 'DELETE' });
+    this._invalidate(url);
+    return data;
+  },
+
+  // 缓存失效逻辑
+  _invalidate(url, body) {
+    // 帖子相关写操作 → 清除帖子列表缓存
+    if (url.startsWith('/api/posts')) {
+      IDB.delByPrefix('api:/api/posts');
+    }
+    // 评论 → 清除评论和帖子详情缓存
+    if (url.match(/^\/api\/posts\/\d+\/comments$/)) {
+      var postId = url.match(/^\/api\/posts\/(\d+)/)[1];
+      IDB.del('api:/api/posts/' + postId + '/comments');
+      IDB.del('api:/api/posts/' + postId);
+    }
+    // 评选投票 → 清除评选缓存
+    if (url.match(/^\/api\/elections\/\d+\/vote$/)) {
+      IDB.delByPrefix('api:/api/elections');
+    }
+    // 建议 → 清除建议缓存
+    if (url.startsWith('/api/suggestions')) {
+      IDB.delByPrefix('api:/api/suggestions');
+    }
+    // 公告 → 清除公告缓存
+    if (url.startsWith('/api/announcements')) {
+      IDB.delByPrefix('api:/api/announcements');
+    }
+  }
 };
 
 // ===== Utilities =====
@@ -1574,6 +1767,7 @@ async function deleteElection(electionId) {
   if (!confirm('确定删除这个评选活动吗？所有候选人数据和投票记录都将被删除。')) return;
   try {
     await API.request('/api/admin/elections/' + electionId, { method: 'DELETE' });
+    IDB.delByPrefix('api:/api/elections');
     toast('评选活动已删除', 'success');
     state.elections = [];
     render();
@@ -1584,6 +1778,7 @@ async function deleteCandidate(candidateId) {
   if (!confirm('确定删除该候选人吗？')) return;
   try {
     await API.request('/api/admin/candidates/' + candidateId, { method: 'DELETE' });
+    IDB.delByPrefix('api:/api/elections');
     toast('候选人已删除', 'success');
     state.elections = [];
     render();
@@ -1808,8 +2003,10 @@ async function adminDeleteComment(commentId) {
   try {
     const data = await API.request('/api/admin/comments/' + commentId, { method: 'DELETE' });
     toast(data.message || '评论已删除', 'success');
-    // 重新加载帖子详情以刷新评论
+    // 失效缓存后重新加载
     if (state.currentPost) {
+      await IDB.del('api:/api/posts/' + state.currentPost.id + '/comments');
+      await IDB.del('api:/api/posts/' + state.currentPost.id);
       const commentData = await API.get('/api/posts/' + state.currentPost.id + '/comments');
       state.comments = commentData.comments;
       state.currentPost.comment_count = (state.currentPost.comment_count || 0) - (data.count || 1);
@@ -2772,6 +2969,8 @@ async function adminCreatePoll() {
 
 // ===== Init =====
 async function init() {
+  // 预初始化IndexedDB（不阻塞，后台执行）
+  IDB.init();
   if (state.token) {
     // 并行执行认证检查和分类加载，加速启动
     const [ok] = await Promise.all([

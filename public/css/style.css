@@ -1,4 +1,4 @@
-/* ============================================
+﻿/* ============================================
    翰林校园论坛 - Warm Gradient Theme
    锈红 → 暖棕 → 香槟金 → 暖沙  渐变主题
    设计灵感: 翰林实验学校品牌色 + Apple HIG
@@ -89,6 +89,10 @@ body {
   overflow-x: hidden;
   line-height: 1.47;
   letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* 背景光晕 - 暖色径向渐变 */
@@ -163,6 +167,7 @@ a:hover { color: var(--c-burgundy-deep); }
   border: 0.5px solid var(--glass-border);
   border-radius: var(--radius-md);
   box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.4), var(--shadow-sm);
+  transform: translateZ(0);
 }
 
 /* --- Header --- */
@@ -230,7 +235,7 @@ a:hover { color: var(--c-burgundy-deep); }
   color: var(--text-on-dark);
   font-size: 0.875rem;
   font-family: inherit;
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
 }
 .header-search input:focus {
   outline: none;
@@ -264,7 +269,7 @@ a:hover { color: var(--c-burgundy-deep); }
   align-items: center;
   justify-content: center;
   font-size: 1rem;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   position: relative;
 }
 .icon-btn:hover { background: rgba(255, 255, 255, 0.15); color: var(--text-on-dark); }
@@ -291,7 +296,7 @@ a:hover { color: var(--c-burgundy-deep); }
   border: 0.5px solid rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.1);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
 .user-avatar-btn:hover { background: rgba(255, 255, 255, 0.2); }
 
@@ -372,7 +377,7 @@ a:hover { color: var(--c-burgundy-deep); }
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-size: 0.875rem;
   font-weight: 600;
   margin-bottom: 2px;
@@ -412,10 +417,12 @@ a:hover { color: var(--c-burgundy-deep); }
   font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
   font-family: inherit;
   white-space: nowrap;
   letter-spacing: -0.01em;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .btn-primary {
   background: var(--grad-burgundy);
@@ -455,6 +462,8 @@ a:hover { color: var(--c-burgundy-deep); }
   overflow: hidden;
   content-visibility: auto;
   contain-intrinsic-size: 120px;
+  contain: layout style paint;
+  will-change: auto;
 }
 .post-card:hover {
   background: rgba(255, 255, 255, 0.75);
@@ -598,7 +607,7 @@ a:hover { color: var(--c-burgundy-deep); }
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 500;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-family: inherit;
 }
 .action-btn:hover { background: rgba(139, 58, 42, 0.1); color: var(--text-primary); }
@@ -623,7 +632,7 @@ a:hover { color: var(--c-burgundy-deep); }
   color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.82rem;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-family: inherit;
   display: flex;
   align-items: center;
@@ -672,7 +681,7 @@ a:hover { color: var(--c-burgundy-deep); }
   cursor: pointer;
   font-size: 0.875rem;
   font-weight: 600;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-family: inherit;
   display: flex;
   align-items: center;
@@ -712,6 +721,7 @@ a:hover { color: var(--c-burgundy-deep); }
   height: 100%;
   border-radius: var(--radius-pill);
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: width;
 }
 .poll-bar-fill.agree { background: var(--grad-gold); }
 .poll-bar-fill.disagree { background: var(--c-burgundy); }
@@ -807,7 +817,7 @@ a:hover { color: var(--c-burgundy-deep); }
   font-family: inherit;
   resize: vertical;
   min-height: 40px;
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
 }
 .comment-input-area textarea:focus {
   outline: none;
@@ -953,7 +963,7 @@ a:hover { color: var(--c-burgundy-deep); }
   color: var(--text-primary);
   font-size: 0.875rem;
   font-family: inherit;
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
 }
 .form-input:focus {
   outline: none;
@@ -1004,7 +1014,7 @@ select.form-input {
   font-weight: 600;
   font-size: 0.875rem;
   color: var(--text-secondary);
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
   border: none;
   background: none;
   font-family: inherit;
@@ -1029,7 +1039,7 @@ select.form-input {
   cursor: pointer;
   font-size: 0.875rem;
   font-weight: 600;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-family: inherit;
   text-align: center;
 }
@@ -1069,7 +1079,7 @@ select.form-input {
   padding: 8px 0;
   border-bottom: 0.5px solid rgba(139, 58, 42, 0.06);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
 .trending-item:hover { padding-left: 4px; }
 .trending-item:last-child { border-bottom: none; }
@@ -1126,7 +1136,7 @@ select.form-input {
   cursor: pointer;
   font-size: 0.82rem;
   font-weight: 600;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   font-family: inherit;
 }
 .suggestion-support:hover { background: rgba(139, 58, 42, 0.1); }
@@ -1212,7 +1222,7 @@ select.form-input {
   font-weight: 600;
   font-size: 0.82rem;
   color: var(--text-secondary);
-  transition: all var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), opacity var(--transition);
   border: none;
   background: none;
   font-family: inherit;
@@ -1275,7 +1285,7 @@ select.form-input {
   font-size: 0.72rem;
   font-weight: 600;
   font-family: inherit;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
 .admin-delete-btn:hover { background: rgba(192, 57, 43, 0.15); }
 .admin-ban-btn {
@@ -1288,7 +1298,7 @@ select.form-input {
   font-size: 0.72rem;
   font-weight: 600;
   font-family: inherit;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
 }
 .admin-ban-btn:hover { background: rgba(139, 58, 42, 0.1); }
 
@@ -1405,8 +1415,8 @@ select.form-input {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.main-content { animation: fade-in-up 0.3s ease; }
-.auth-card { animation: fade-in-up 0.4s ease; }
+.main-content { animation: fade-in-up 0.3s ease; will-change: transform, opacity; }
+.auth-card { animation: fade-in-up 0.4s ease; will-change: transform, opacity; }
 
 .skeleton {
   background: rgba(139, 58, 42, 0.06);
