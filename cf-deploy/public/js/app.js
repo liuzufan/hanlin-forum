@@ -258,7 +258,7 @@ const API = {
   // 缓存失效逻辑
   _invalidate(url, body) {
     // 帖子相关写操作 → 清除帖子列表缓存
-    if (url.startsWith('/api/posts')) {
+    if (url.startsWith('/api/posts') || url.match(/^\/api\/admin\/posts\/\d+$/)) {
       IDB.delByPrefix('api:/api/posts');
     }
     // 评论 → 清除评论和帖子详情缓存
@@ -272,11 +272,11 @@ const API = {
       IDB.delByPrefix('api:/api/elections');
     }
     // 建议 → 清除建议缓存
-    if (url.startsWith('/api/suggestions')) {
+    if (url.startsWith('/api/suggestions') || url.startsWith('/api/admin/suggestions')) {
       IDB.delByPrefix('api:/api/suggestions');
     }
-    // 公告 → 清除公告缓存
-    if (url.startsWith('/api/announcements')) {
+    // 公告 → 清除公告缓存（包括管理员操作）
+    if (url.startsWith('/api/announcements') || url.startsWith('/api/admin/announce')) {
       IDB.delByPrefix('api:/api/announcements');
     }
   }
@@ -323,16 +323,29 @@ function toast(message, type = 'info') {
 }
 
 // ===== 公告折叠 & 未读弹窗 =====
+// 展开公告 → 打开液态玻璃弹窗显示完整内容
 function toggleAnnouncement(annId, btnEl) {
-  var body = document.getElementById('annBody-' + annId);
-  var btn = btnEl || (event && event.currentTarget ? event.currentTarget : document.querySelector('.announcement-banner[data-ann-id="' + annId + '"] .ann-toggle-btn'));
-  var icon = btn ? btn.querySelector('i') : null;
-  if (!body) return;
-  var isCollapsed = body.classList.toggle('ann-collapsed');
-  if (icon) {
-    icon.className = isCollapsed ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+  // 从全局或DOM获取公告数据
+  var annData = null;
+  if (window._homepageAnnouncements) {
+    annData = window._homepageAnnouncements.find(function(a) { return a.id === annId; });
   }
-  if (btn) btn.blur();
+  if (!annData) {
+    // 从DOM提取
+    var banner = document.querySelector('.announcement-banner[data-ann-id="' + annId + '"]');
+    if (banner) {
+      annData = {
+        id: annId,
+        title: banner.querySelector('.ann-title') ? banner.querySelector('.ann-title').textContent : '',
+        content: banner.querySelector('.ann-text') ? banner.querySelector('.ann-text').textContent : '',
+        created_at: null
+      };
+    }
+  }
+  if (annData) {
+    showAnnouncementPopup([annData], true);
+  }
+  if (btnEl) btnEl.blur();
 }
 
 var _allAnnExpanded = false;
@@ -343,7 +356,6 @@ function toggleAllAnnouncements() {
   var banners = container.querySelectorAll('.announcement-banner');
   var moreText = document.getElementById('annMoreText');
   var moreIcon = document.getElementById('annMoreIcon');
-  // 隐藏的公告（index >= 2）
   for (var i = 2; i < banners.length; i++) {
     banners[i].style.display = _allAnnExpanded ? 'flex' : 'none';
   }
@@ -368,26 +380,36 @@ function _markAllAnnouncementsRead(announcements) {
   localStorage.setItem('readAnnouncements', JSON.stringify(read));
 }
 
-function showAnnouncementPopup(announcements) {
+// showAnnouncementPopup: 支持未读弹窗和手动展开两种模式
+function showAnnouncementPopup(announcements, isManual) {
   if (!announcements || announcements.length === 0) return;
-  var read = _getReadAnnouncements();
-  var unread = announcements.filter(function(a) { return read.indexOf(a.id) === -1; });
-  if (unread.length === 0) return;
+  var items = announcements;
+  if (!isManual) {
+    // 未读模式：只显示未读
+    var read = _getReadAnnouncements();
+    items = announcements.filter(function(a) { return read.indexOf(a.id) === -1; });
+    if (items.length === 0) return;
+  }
+
+  // 移除已有弹窗
+  var existing = document.querySelector('.ann-popup-overlay');
+  if (existing) existing.remove();
 
   var overlay = document.createElement('div');
   overlay.className = 'ann-popup-overlay';
+  var headerText = isManual ? '公告详情' : (items.length === 1 ? '新公告' : items.length + ' 条新公告');
   overlay.innerHTML = '<div class="ann-popup">' +
     '<div class="ann-popup-header">' +
       '<i class="fas fa-bullhorn"></i>' +
-      '<span>' + (unread.length === 1 ? '新公告' : unread.length + ' 条新公告') + '</span>' +
+      '<span>' + headerText + '</span>' +
       '<button class="ann-popup-close" onclick="this.parentElement.parentElement.remove()"><i class="fas fa-times"></i></button>' +
     '</div>' +
     '<div class="ann-popup-body">' +
-      unread.map(function(a) {
+      items.map(function(a) {
         return '<div class="ann-popup-item">' +
           '<div class="ann-popup-title">' + escapeHtml(a.title) + '</div>' +
           '<div class="ann-popup-text">' + escapeHtml(a.content) + '</div>' +
-          '<div class="ann-popup-time"><i class="fas fa-clock"></i> ' + formatTime(a.created_at) + ' · ' + escapeHtml(a.author && a.author.nickname || '管理员') + '</div>' +
+          '<div class="ann-popup-time"><i class="fas fa-clock"></i> ' + (a.created_at ? formatTime(a.created_at) + ' · ' : '') + escapeHtml(a.author && a.author.nickname || '管理员') + '</div>' +
         '</div>';
       }).join('') +
     '</div>' +
@@ -396,7 +418,6 @@ function showAnnouncementPopup(announcements) {
     '</div>' +
   '</div>';
   document.body.appendChild(overlay);
-  // 动画
   requestAnimationFrame(function() { overlay.classList.add('show'); });
 }
 
@@ -918,6 +939,7 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
   }
   if (annRes.status === 'fulfilled') {
     announcements = annRes.value.announcements || [];
+    window._homepageAnnouncements = announcements; // 供展开按钮使用
     // 触发未读公告弹窗（仅在首页且非搜索/分类时）
     if (announcements.length > 0 && !search && category === 'all' && sort === 'latest') {
       setTimeout(function() { showAnnouncementPopup(announcements); }, 800);
@@ -954,8 +976,8 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
             <div class="ann-content">
               <div class="ann-header">
                 <div class="ann-title">${escapeHtml(a.title)}</div>
-                <button class="ann-toggle-btn" onclick="toggleAnnouncement(${a.id}, this)" title="折叠/展开">
-                  <i class="fas fa-chevron-up"></i>
+                <button class="ann-toggle-btn" onclick="toggleAnnouncement(${a.id}, this)" title="查看完整公告">
+                  <i class="fas fa-expand-alt"></i> 展开
                 </button>
               </div>
               <div class="ann-body" id="annBody-${a.id}">
@@ -2928,10 +2950,12 @@ async function adminEditPost(postId) {
 }
 
 async function adminDeletePost(postId, title) {
-  if (!confirm('确定删除帖子「' + title + '」吗？')) return;
+  if (!confirm('确定删除帖子「' + title + '」吗？\n删除后无法恢复，相关评论也将一并删除。')) return;
   try {
-    await API.request('/api/admin/posts/' + postId, { method: 'DELETE' });
+    await API.delete('/api/admin/posts/' + postId);
     toast('帖子已删除', 'success');
+    // 清除本地缓存
+    IDB.delByPrefix('api:/api/posts');
     render();
   } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
@@ -3278,17 +3302,6 @@ async function adminPostAsUser() {
   } catch (e) { toast(e.message || '发布失败', 'error'); }
 }
 
-async function adminDeletePost(postId, title) {
-  if (!confirm('确定要删除帖子"' + title + '"吗？\n删除后无法恢复，相关评论也将一并删除。')) return;
-  try {
-    await API.request('/api/admin/posts/' + postId, { method: 'DELETE' });
-    toast('帖子已删除', 'success');
-    render();
-  } catch (e) {
-    toast('删除失败: ' + e.message, 'error');
-  }
-}
-
 async function banUser(userId) {
   if (!confirm('确定要禁言该用户吗？\n禁言后该用户将无法登录论坛。')) return;
   try {
@@ -3329,9 +3342,12 @@ async function createAnnouncement() {
 async function adminDeleteAnnouncement(annId) {
   if (!confirm('确定删除这条公告吗？')) return;
   try {
-    await API.request('/api/admin/announcements/' + annId, { method: 'DELETE' });
+    await API.delete('/api/admin/announcements/' + annId);
     toast('公告已删除', 'success');
-    announcements_global = []; // 清除缓存以重新加载
+    // 清除本地缓存
+    IDB.delByPrefix('api:/api/announcements');
+    announcements_global = [];
+    window._homepageAnnouncements = null;
     render();
   } catch (e) { toast('删除失败: ' + e.message, 'error'); }
 }
