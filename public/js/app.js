@@ -203,7 +203,20 @@ const API = {
     }
     // 无缓存，从服务器获取
     var data = await this.request(url);
-    await IDB.set(cacheKey, { v: data, t: Date.now() });
+    // 只缓存有实际内容的数据（避免缓存空公告等）
+    if (data && (
+      (data.posts && data.posts.length > 0) ||
+      (data.announcements && data.announcements.length > 0) ||
+      (data.categories && data.categories.length > 0) ||
+      (data.elections && data.elections.length > 0) ||
+      (data.suggestions && data.suggestions.length > 0) ||
+      (data.comments && data.comments.length > 0) ||
+      (data.id) || // 单个对象（帖子详情等）
+      (data.user) || // 用户信息
+      (data.stats) // 统计数据
+    )) {
+      await IDB.set(cacheKey, { v: data, t: Date.now() });
+    }
     return data;
   },
 
