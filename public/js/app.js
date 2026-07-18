@@ -187,9 +187,16 @@ function selectRole(role) {
 
 // ===== Load Categories =====
 async function loadCategories() {
+  // 先用缓存快速渲染，后台静默刷新
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem('categories_cache') || 'null'); } catch {}
+  if (cached && cached.length > 0) {
+    state.categories = cached;
+  }
   try {
     const data = await API.get('/api/categories');
     state.categories = data.categories;
+    localStorage.setItem('categories_cache', JSON.stringify(data.categories));
   } catch (e) {
     console.error('Failed to load categories:', e);
   }
@@ -595,23 +602,26 @@ async function renderHomePage(sort = 'latest', category = 'all', search = '') {
     state.homeDisplayLimit = 20;
     state.lastHomeQuery = querySig;
   }
+  // 并行加载帖子和公告
   let posts = [];
-  try {
-    const params = new URLSearchParams({ sort, limit: 100 });
-    if (category && category !== 'all') params.set('category', category);
-    if (search) params.set('search', search);
-    const data = await API.get(`/api/posts?${params}`);
-    posts = data.posts;
+  let announcements = [];
+  const params = new URLSearchParams({ sort, limit: 100 });
+  if (category && category !== 'all') params.set('category', category);
+  if (search) params.set('search', search);
+  
+  const [postsRes, annRes] = await Promise.allSettled([
+    API.get(`/api/posts?${params}`),
+    API.get('/api/announcements'),
+  ]);
+  if (postsRes.status === 'fulfilled') {
+    posts = postsRes.value.posts;
     state.posts = posts;
-  } catch (e) {
+  } else {
     toast('加载帖子失败', 'error');
   }
-
-  let announcements = [];
-  try {
-    const annData = await API.get('/api/announcements');
-    announcements = annData.announcements || [];
-  } catch {}
+  if (annRes.status === 'fulfilled') {
+    announcements = annRes.value.announcements || [];
+  }
 
   const sortTabs = [
     { key: 'latest', label: '最新', icon: 'clock' },
@@ -847,7 +857,7 @@ function renderCommentItem(comment) {
           <span style="font-size:0.7rem;color:var(--text-tertiary);background:var(--bg-surface);padding:1px 6px;border-radius:4px">${escapeHtml(author.department || '')}</span>
           <span class="comment-time">${formatTime(comment.created_at)}</span>
         </div>
-        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? `<img src="${escapeHtml(comment.image)}" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openImagePreview('${escapeHtml(comment.image)}')" onerror="this.style.display='none'">` : ''}</div>
+        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? (function() { cacheImage('comment-' + comment.id, comment.image); return `<img src="${escapeHtml(comment.image)}" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openCachedImage('comment-${comment.id}')" onerror="this.style.display='none'">`; })() : ''}</div>
         <div class="comment-actions">
           <button class="comment-action ${comment.liked ? 'active' : ''}" onclick="likeComment(${comment.id})">
             <i class="${comment.liked ? 'fas' : 'far'} fa-heart"></i> ${comment.likes}
@@ -1360,7 +1370,7 @@ function renderCandidate(candidate, election, isAdmin) {
   else if (election.status !== 'active') noVoteReason = '';
   else if (electionVoteInfo.votes_remaining === 0) noVoteReason = '今日票数已用完';
   var imgHtml = candidate.image
-    ? `<img src="${escapeHtml(candidate.image)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openImagePreview('${escapeHtml(candidate.image)}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`
+    ? (function() { cacheImage('cand-' + candidate.id, candidate.image); return `<img src="${escapeHtml(candidate.image)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openCachedImage('cand-${candidate.id}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`; })()
     : `<div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`;
   return `
     <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;background:var(--bg-surface);border-radius:var(--radius);${hasVoted ? 'border:2px solid var(--c-gold)' : ''}">
@@ -1711,12 +1721,27 @@ function removeCommentImage(key) {
   if (previewEl) previewEl.style.display = 'none';
 }
 
+var _imageCache = {};
+
+function cacheImage(id, url) {
+  _imageCache[id] = url;
+}
+
 function openImagePreview(url) {
+  if (!url) return;
   var overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out';
-  overlay.innerHTML = '<img src="' + url + '" style="max-width:90%;max-height:90%;border-radius:8px">';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out;animation:fadeIn 0.2s ease';
+  var img = document.createElement('img');
+  img.style.cssText = 'max-width:90%;max-height:90%;border-radius:8px;box-shadow:0 4px 30px rgba(0,0,0,0.5);animation:slideUp 0.3s ease';
+  img.src = url;
+  img.onerror = function() { toast('图片加载失败', 'error'); };
+  overlay.appendChild(img);
   overlay.onclick = function() { document.body.removeChild(overlay); };
   document.body.appendChild(overlay);
+}
+
+function openCachedImage(id) {
+  openImagePreview(_imageCache[id]);
 }
 
 async function submitComment(postId) {
@@ -1965,10 +1990,38 @@ async function loadNotifications() {
 }
 
 // ===== Router =====
-async function render() {
+var _renderTimer = null;
+var _isRendering = false;
+
+function render() {
+  // 防抖：快速连续调用时只执行最后一次
+  if (_renderTimer) clearTimeout(_renderTimer);
+  return new Promise(function(resolve) {
+    _renderTimer = setTimeout(async function() {
+      _renderTimer = null;
+      if (_isRendering) { resolve(); return; }
+      _isRendering = true;
+      try {
+        await _doRender();
+      } finally {
+        _isRendering = false;
+      }
+      resolve();
+    }, 50);
+  });
+}
+
+async function _doRender() {
   const route = getRoute();
   const app = $('#app');
   let content = '';
+
+  // 显示加载状态（仅当内容区域为空或路由切换时）
+  var currentRoute = app.dataset.route || '';
+  if (currentRoute !== route && !app.querySelector('.loading-indicator')) {
+    app.innerHTML = '<div class="loading-indicator" style="display:flex;justify-content:center;align-items:center;padding:40px"><i class="fas fa-circle-notch fa-spin" style="font-size:1.5rem;color:var(--c-teal)"></i></div>';
+  }
+  app.dataset.route = route;
 
   // Auth page
   if (route.startsWith('/login')) {
@@ -2033,21 +2086,17 @@ var adminTab = 'dashboard';
 async function renderAdminPanel() {
   let stats = {}, users = [], posts = [], announcements = [];
   
-  try {
-    stats = await API.get('/api/admin/stats');
-  } catch {}
-  try {
-    const ud = await API.get('/api/admin/users');
-    users = ud.users || [];
-  } catch {}
-  try {
-    const pd = await API.get('/api/posts?limit=50');
-    posts = pd.posts || [];
-  } catch {}
-  try {
-    const ad = await API.get('/api/announcements');
-    announcements = ad.announcements || [];
-  } catch {}
+  // 并行加载所有数据，大幅提升速度
+  const [statsRes, usersRes, postsRes, annRes] = await Promise.allSettled([
+    API.get('/api/admin/stats'),
+    API.get('/api/admin/users'),
+    API.get('/api/posts?limit=50'),
+    API.get('/api/announcements'),
+  ]);
+  if (statsRes.status === 'fulfilled') stats = statsRes.value;
+  if (usersRes.status === 'fulfilled') users = usersRes.value.users || [];
+  if (postsRes.status === 'fulfilled') posts = postsRes.value.posts || [];
+  if (annRes.status === 'fulfilled') announcements = annRes.value.announcements || [];
 
   state.adminData = { users, posts, stats };
 
@@ -2724,16 +2773,18 @@ async function adminCreatePoll() {
 // ===== Init =====
 async function init() {
   if (state.token) {
-    const ok = await checkAuth();
+    // 并行执行认证检查和分类加载，加速启动
+    const [ok] = await Promise.all([
+      checkAuth(),
+      loadCategories(),
+    ]);
     if (ok) {
-      await loadCategories();
-      await loadNotifications();
+      loadNotifications(); // 不阻塞，后台静默加载
     } else {
       // Token expired or invalid
       state.token = null;
       state.user = null;
       localStorage.removeItem('token');
-      await loadCategories();
       var route = getRoute();
       if (!route.startsWith('/login') && !route.startsWith('/post/')) {
         navigate('/login');
@@ -2754,7 +2805,7 @@ async function init() {
   window.addEventListener('hashchange', render);
   await render();
   
-  // Periodically check notifications
+  // Periodically check notifications (静默，不触发渲染)
   setInterval(loadNotifications, 60000);
 }
 

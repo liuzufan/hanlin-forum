@@ -1204,7 +1204,9 @@ export async function onRequest(context) {
   const { request, env, waitUntil } = context;
   setEnv(env);
   const response = await handleRequest(request);
-  // 写操作必须同步保存，确保数据落盘后才返回响应
-  await saveDB();
+  // 仅在有写操作时才保存数据库，GET 请求跳过保存
+  if (request.method !== 'GET') {
+    await saveDB();
+  }
   return response;
 }
