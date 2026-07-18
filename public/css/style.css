@@ -4,30 +4,6 @@
    设计灵感: 翰林实验学校品牌色 + Apple HIG
    ============================================ */
 
-/* ===== View Transitions API 丝滑页面切换 ===== */
-@view-transition { navigation: auto; }
-
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 0.25s;
-  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-::view-transition-old(root) {
-  animation-name: vt-fade-out;
-}
-::view-transition-new(root) {
-  animation-name: vt-fade-in;
-}
-
-@keyframes vt-fade-out {
-  to { opacity: 0; transform: scale(0.98); }
-}
-@keyframes vt-fade-in {
-  from { opacity: 0; transform: scale(1.02); }
-  to { opacity: 1; transform: scale(1); }
-}
-
 /* --- Design Tokens --- */
 :root {
   /* 品牌色 */
@@ -1449,13 +1425,13 @@ select.form-input {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* --- Page Entrance Animation --- */
+/* --- Page Entrance Animation (仅登录页,不用于主内容避免闪烁) --- */
 @keyframes fade-in-up {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.main-content { animation: fade-in-up 0.3s ease; will-change: transform, opacity; }
-.auth-card { animation: fade-in-up 0.4s ease; will-change: transform, opacity; }
+.main-content { }
+.auth-card { animation: fade-in-up 0.4s ease; }
 
 .skeleton {
   background: rgba(139, 58, 42, 0.06);
