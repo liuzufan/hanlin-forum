@@ -402,7 +402,7 @@ function showAnnouncementPopup(announcements, isManual) {
     '<div class="ann-popup-header">' +
       '<i class="fas fa-bullhorn"></i>' +
       '<span>' + headerText + '</span>' +
-      '<button class="ann-popup-close" onclick="this.parentElement.parentElement.remove()"><i class="fas fa-times"></i></button>' +
+      '<button class="ann-popup-close" onclick="_closeAnnPopup()"><i class="fas fa-times"></i></button>' +
     '</div>' +
     '<div class="ann-popup-body">' +
       items.map(function(a) {
@@ -666,52 +666,73 @@ function renderSidebar() {
 
 async function renderRightSidebar() {
   if (window.innerWidth < 1024) return '';
-  
-  // 使用缓存的统计数据，5分钟刷新一次
-  let stats = _statsCache || { users: 0, posts: 0, comments: 0 };
+
+  // 后台静默刷新统计数据（供admin面板使用，不阻塞渲染）
   var now = Date.now();
   if (!_statsCache || (now - _statsCacheTime) > 5 * 60 * 1000) {
-    // 后台静默刷新，不阻塞渲染
     API.get('/api/stats').then(function(data) {
       _statsCache = data;
       _statsCacheTime = Date.now();
-      // 只更新右侧栏的统计数字，不触发全量渲染
-      _updateStatsDisplay(data);
     }).catch(function() {});
   }
 
   let trending = state.posts.slice(0, 5);
   if (trending.length === 0 && state.posts.length === 0) {
-    // 使用缓存的热门帖子，不阻塞渲染
     try {
       const data = await API.get('/api/posts?sort=hot&limit=5');
       trending = data.posts;
-      state.posts = trending; // 缓存到state供下次使用
+      state.posts = trending;
     } catch {}
   }
 
+  // 获取评选排名数据
+  let electionRankingHtml = '<div style="text-align:center;padding:16px;color:var(--text-tertiary);font-size:0.8rem">暂无评选活动</div>';
+  try {
+    const elecData = await API.get('/api/elections');
+    const elections = elecData.elections || [];
+    const activeElections = elections.filter(e => e.status === 'active' || e.status === 'ended');
+    if (activeElections.length > 0) {
+      // 取第一个活跃/已结束的评选
+      const election = activeElections[0];
+      const topCandidates = election.candidates.slice(0, 5);
+      const totalVotes = election.total_votes || 0;
+      electionRankingHtml = `
+        <div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:0.78rem;color:var(--text-tertiary)">${escapeHtml(election.title)}</span>
+          <span style="font-size:0.7rem;padding:2px 8px;border-radius:10px;background:${election.status === 'active' ? 'rgba(34,197,94,0.15)' : 'rgba(148,163,184,0.15)'};color:${election.status === 'active' ? '#22c55e' : '#94a3b8'}">${election.status === 'active' ? '进行中' : '已结束'}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${topCandidates.map((c, i) => {
+            const pct = totalVotes > 0 ? Math.round(c.vote_count / totalVotes * 100) : 0;
+            const rankColors = ['var(--c-gold)', '#94a3b8', '#b87333'];
+            const rankColor = i < 3 ? rankColors[i] : 'var(--text-tertiary)';
+            return `
+              <div style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:4px 0" onclick="navigate('/elections')">
+                <span style="width:20px;height:20px;border-radius:50%;background:${rankColor}22;color:${rankColor};display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700;flex-shrink:0">${i + 1}</span>
+                ${c.image ? `<img src="${escapeHtml(c.image)}" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid var(--border-color)" onerror="this.style.display='none'">` : `<div style="width:28px;height:28px;border-radius:50%;background:var(--c-burgundy);color:white;display:flex;align-items:center;justify-content:center;font-size:0.7rem;flex-shrink:0">${escapeHtml(c.name.charAt(0))}</div>`}
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:0.8rem;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(c.name)}</div>
+                  <div style="height:4px;background:var(--border-color);border-radius:2px;margin-top:3px;overflow:hidden">
+                    <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,var(--c-burgundy),var(--c-gold));border-radius:2px;transition:width 0.3s"></div>
+                  </div>
+                </div>
+                <span style="font-size:0.75rem;font-weight:600;color:var(--text-secondary);flex-shrink:0">${c.vote_count}票</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:10px;font-size:0.78rem" onclick="navigate('/elections')">
+          查看全部评选 <i class="fas fa-arrow-right" style="font-size:0.7rem"></i>
+        </button>
+      `;
+    }
+  } catch {}
+
   return `
     <aside class="sidebar right-sidebar" style="width:280px">
-      <div class="glass stats-card">
-        <h3 style="font-size:0.9rem;margin-bottom:4px"><i class="fas fa-chart-line" style="color:var(--c-teal)"></i> 论坛统计</h3>
-        <div class="stats-grid">
-          <div class="stat-item">
-            <div class="stat-value">${stats.users}</div>
-            <div class="stat-label">注册用户</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-value">${stats.posts}</div>
-            <div class="stat-label">帖子总数</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-value">${stats.comments}</div>
-            <div class="stat-label">评论总数</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-value">${stats.todayPosts}</div>
-            <div class="stat-label">今日新帖</div>
-          </div>
-        </div>
+      <div class="glass election-ranking-card" style="padding:16px">
+        <h3 style="font-size:0.9rem;margin-bottom:10px;display:flex;align-items:center;gap:6px"><i class="fas fa-trophy" style="color:var(--c-gold)"></i> 评选排名</h3>
+        ${electionRankingHtml}
       </div>
       <div class="glass trending-card">
         <h3 style="font-size:0.9rem;margin-bottom:8px"><i class="fas fa-arrow-trend-up" style="color:var(--c-amber)"></i> 热门帖子</h3>
@@ -900,6 +921,14 @@ function renderPostList(posts, loading = false) {
         </span>
         <h3 class="post-title">${escapeHtml(post.title)}</h3>
         <p class="post-excerpt">${escapeHtml(post.content.substring(0, 200))}</p>
+        ${post.images && post.images.length > 0 ? `
+          <div style="display:flex;gap:6px;margin-top:8px">
+            ${post.images.slice(0, 3).map((img, idx) => `
+              <img src="${escapeHtml(img)}" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color)" onclick="event.stopPropagation();openImagePreview('${escapeHtml(img).replace(/'/g, "\\'")}')" onerror="this.style.display='none'">
+            `).join('')}
+            ${post.images.length > 3 ? `<div style="width:60px;height:60px;border-radius:6px;background:var(--bg-surface);display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:var(--text-tertiary)">+${post.images.length - 3}</div>` : ''}
+          </div>
+        ` : ''}
         ${post.tags && post.tags.length > 0 ? `
           <div class="post-tags">
             ${post.tags.map(t => `<span class="post-tag">#${escapeHtml(t)}</span>`).join('')}
@@ -1124,6 +1153,13 @@ async function renderPostDetail(postId) {
         <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="navigate('/profile/${author.id}')">查看主页</button>
       </div>
       <div class="post-detail-content" id="postContent-${post.id}">${escapeHtml(post.content)}</div>
+      ${post.images && post.images.length > 0 ? `
+        <div class="post-detail-images" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px">
+          ${post.images.map((img, i) => `
+            <img src="${escapeHtml(img)}" style="width:180px;height:180px;object-fit:cover;border-radius:var(--radius-md);cursor:pointer;border:1px solid var(--border-color);transition:transform 0.2s" onclick="openImagePreview('${escapeHtml(img).replace(/'/g, "\\'")}')" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" onerror="this.style.display='none'">
+          `).join('')}
+        </div>
+      ` : ''}
       <div style="margin-top:8px;display:flex;gap:8px">
         <button class="btn btn-ghost btn-sm" onclick="translatePost(${post.id})" id="translateBtn-${post.id}">
           <i class="fas fa-language"></i> 翻译
@@ -1271,6 +1307,17 @@ function renderCreatePost() {
         <textarea class="form-input" id="postContent" placeholder="分享你的想法..." rows="10" style="min-height:200px"></textarea>
       </div>
       <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <i class="fas fa-camera" style="color:var(--c-teal)"></i> 添加图片（最多3张）
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg-surface);border-radius:var(--radius);cursor:pointer;margin-bottom:8px;border:1px dashed var(--border-color);transition:border-color 0.2s" onmouseover="this.style.borderColor='var(--c-teal)'" onmouseout="this.style.borderColor='var(--border-color)'">
+          <i class="fas fa-image" style="color:var(--c-teal);font-size:1.1rem"></i>
+          <span id="postImgLabel" style="font-size:0.85rem;color:var(--text-secondary)">点击选择图片</span>
+          <input type="file" accept="image/*" multiple style="display:none" onchange="handlePostImages(this)">
+        </label>
+        <div id="postImgPreview" style="display:none;flex-wrap:wrap;gap:8px;margin-bottom:8px"></div>
+      </div>
+      <div class="form-group">
         <label class="form-label">标签（按回车添加）</label>
         <div class="tag-input-area" id="tagInputArea">
           <input type="text" class="tag-input" id="tagInput" placeholder="输入标签..." onkeydown="handleTagInput(event)">
@@ -1307,6 +1354,50 @@ function togglePollForm() {
 }
 
 let postTags = [];
+var postImages = [];
+
+function handlePostImages(input) {
+  var files = Array.from(input.files).slice(0, 3);
+  if (files.length === 0) return;
+  var label = document.getElementById('postImgLabel');
+  label.textContent = '处理中...';
+  var promises = files.map(function(file) {
+    return compressImage(file, 800, 0.7);
+  });
+  Promise.all(promises).then(function(results) {
+    postImages = results;
+    var preview = document.getElementById('postImgPreview');
+    preview.style.display = 'flex';
+    preview.innerHTML = postImages.map(function(src, i) {
+      return '<div style="position:relative;display:inline-block">' +
+        '<img src="' + src + '" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color)">' +
+        '<button onclick="removePostImage(' + i + ')" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--c-burgundy);color:white;border:none;cursor:pointer;font-size:0.7rem;display:flex;align-items:center;justify-content:center"><i class="fas fa-times"></i></button>' +
+      '</div>';
+    }).join('');
+    label.textContent = postImages.length + ' 张图片已选择';
+  }).catch(function() {
+    label.textContent = '图片处理失败';
+  });
+}
+
+function removePostImage(index) {
+  postImages.splice(index, 1);
+  var preview = document.getElementById('postImgPreview');
+  var label = document.getElementById('postImgLabel');
+  if (postImages.length === 0) {
+    preview.style.display = 'none';
+    label.textContent = '点击选择图片';
+  } else {
+    preview.innerHTML = postImages.map(function(src, i) {
+      return '<div style="position:relative;display:inline-block">' +
+        '<img src="' + src + '" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color)">' +
+        '<button onclick="removePostImage(' + i + ')" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:var(--c-burgundy);color:white;border:none;cursor:pointer;font-size:0.7rem;display:flex;align-items:center;justify-content:center"><i class="fas fa-times"></i></button>' +
+      '</div>';
+    }).join('');
+    label.textContent = postImages.length + ' 张图片已选择';
+  }
+}
+
 function handleTagInput(e) {
   if (e.key === 'Enter') {
     e.preventDefault();
@@ -1354,8 +1445,9 @@ async function submitPost() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 发布中...';
   try {
-    const data = await API.post('/api/posts', { title, content, category_id, tags: postTags, poll_question });
+    const data = await API.post('/api/posts', { title, content, category_id, tags: postTags, images: postImages, poll_question });
     postTags = [];
+    postImages = [];
     toast('发布成功！', 'success');
     navigate(`/post/${data.post.id}`);
   } catch (e) {
@@ -2274,14 +2366,32 @@ function cacheImage(id, url) {
 function openImagePreview(url) {
   if (!url) return;
   var overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999;cursor:zoom-out;animation:fadeIn 0.2s ease';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.88);display:flex;align-items:center;justify-content:center;z-index:10000;cursor:zoom-out;opacity:0;transition:opacity 0.25s ease;padding:20px';
   var img = document.createElement('img');
-  img.style.cssText = 'max-width:90%;max-height:90%;border-radius:8px;box-shadow:0 4px 30px rgba(0,0,0,0.5);animation:slideUp 0.3s ease';
+  img.style.cssText = 'max-width:92%;max-height:88%;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,0.6);transform:scale(0.92);transition:transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
   img.src = url;
   img.onerror = function() { toast('图片加载失败', 'error'); };
   overlay.appendChild(img);
-  overlay.onclick = function() { document.body.removeChild(overlay); };
+  var closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '<i class="fas fa-times"></i>';
+  closeBtn.style.cssText = 'position:fixed;top:20px;right:20px;width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.15);color:white;border:none;cursor:pointer;font-size:1.2rem;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);transition:background 0.2s';
+  closeBtn.onmouseover = function() { this.style.background = 'rgba(255,255,255,0.3)'; };
+  closeBtn.onmouseout = function() { this.style.background = 'rgba(255,255,255,0.15)'; };
+  overlay.appendChild(closeBtn);
+  overlay.onclick = function(e) {
+    if (e.target === overlay || e.target === closeBtn || e.target.closest('button')) {
+      overlay.style.opacity = '0';
+      setTimeout(function() { if (overlay.parentNode) document.body.removeChild(overlay); }, 250);
+    }
+  };
   document.body.appendChild(overlay);
+  requestAnimationFrame(function() {
+    overlay.style.opacity = '1';
+    img.style.transform = 'scale(1)';
+  });
+  // ESC关闭
+  var escHandler = function(e) { if (e.key === 'Escape') { overlay.click(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
 }
 
 function openCachedImage(id) {
