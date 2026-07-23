@@ -8,8 +8,14 @@ const bcrypt = require('bcryptjs');
 let _env = {};
 let db = null;
 let _dirty = false;
+let _dbLoadTime = 0;        // 上次从KV加载的时间
+const DB_CACHE_TTL = 5000;  // 内存缓存TTL: 5秒（同一isolate内复用）
 
-function setEnv(env) { _env = env; db = null; _dirty = false; }
+function setEnv(env) {
+  _env = env;
+  // 不再重置db=null，保留内存缓存
+  // 只在首次或TTL过期时重新从KV加载
+}
 
 function useKV() { return !!_env.FORUM_DB; }
 function getSupabaseUrl() { return _env.SUPABASE_URL || (typeof process !== 'undefined' && process.env?.SUPABASE_URL) || ''; }
@@ -78,20 +84,25 @@ async function saveToKV() {
 }
 
 // === Init / Load / Save ===
-// 每次请求都从 KV 读取最新数据，确保数据一致性
+// 内存缓存：同一isolate内5秒内复用，避免每次请求都读KV
 async function loadDB() {
-  if (db) return db;
+  // 如果内存中有db且未过期，直接返回
+  if (db && (Date.now() - _dbLoadTime) < DB_CACHE_TTL) {
+    return db;
+  }
   
   if (useKV()) {
     try {
       const cloud = await loadFromKV();
       if (cloud) {
         db = cloud;
+        _dbLoadTime = Date.now();
         const defaults = getDefaultData();
         Object.keys(defaults).forEach(k => { if (db[k] === undefined) db[k] = defaults[k]; });
         Object.keys(defaults.nextId).forEach(k => { if (db.nextId[k] === undefined) db.nextId[k] = defaults.nextId[k]; });
       } else {
         db = getDefaultData();
+        _dbLoadTime = Date.now();
         seedData();
         _dirty = true;
         await saveToKV();
@@ -153,6 +164,13 @@ async function ensureDB() { return loadDB(); }
 async function initDB() { return loadDB(); }
 function markDirty() { _dirty = true; }
 function getNextId(t) { if (!db.nextId[t]) db.nextId[t] = 1; return db.nextId[t]++; }
+
+// 写操作前强制从KV重新加载最新数据（避免覆盖并发写入）
+async function forceReloadDB() {
+  db = null;
+  _dbLoadTime = 0;
+  return loadDB();
+}
 
 // ===== 种子数据 =====
 const AVATAR_COLORS = ['#8B2323','#C9A227','#6B1A1A','#D4AF37','#A52A2A','#B8860B','#CD853F','#DA8A2C','#8B4513','#BDB76B','#9B2226','#BB9457','#6D1A1A','#CFA636','#7A1F1F','#DAA520','#A0522D','#BC8F8F','#8B6914','#D2691E'];
@@ -299,4 +317,4 @@ function update(t, id, u) { const r = findById(t, id); if (r) { Object.assign(r,
 function remove(t, c) { const before = db[t].length; db[t] = db[t].filter(r => !Object.entries(c).every(([k,v]) => r[k] === v)); if (db[t].length !== before) _dirty = true; }
 function increment(t, id, f, a=1) { const r = findById(t, id); if (r) { r[f] = (r[f]||0)+a; _dirty = true; } }
 
-module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, markDirty, setEnv };
+module.exports = { loadDB, saveDB, getDB, ensureDB, initDB, findById, findOne, findAll, insert, update, remove, increment, markDirty, setEnv, forceReloadDB };

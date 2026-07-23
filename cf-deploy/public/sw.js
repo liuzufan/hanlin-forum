@@ -1,20 +1,20 @@
-// 翰林校园论坛 Service Worker v35
-const CACHE_NAME = 'hanlin-v35';
+// 翰林校园论坛 Service Worker v36
+const CACHE_NAME = 'hanlin-v36';
 const STATIC_ASSETS = [
   '/',
   '/css/style.css?v=29',
-  '/js/app.js?v=35',
+  '/js/app.js?v=36',
   '/manifest.json',
   '/robots.txt',
   '/sitemap.xml'
 ];
 
 const API_CACHE_TTL = {
-  '/api/posts': 3 * 60 * 1000,
+  '/api/posts': 5 * 60 * 1000,
   '/api/categories': 60 * 60 * 1000,
-  '/api/announcements': 5 * 60 * 1000,
-  '/api/elections': 30 * 1000,
-  '/api/suggestions': 2 * 60 * 1000,
+  '/api/announcements': 2 * 60 * 1000,
+  '/api/elections': 60 * 1000,
+  '/api/suggestions': 3 * 60 * 1000,
 };
 
 const NO_CACHE_API = [
@@ -90,9 +90,11 @@ self.addEventListener('fetch', function(event) {
             var age = cachedDate ? Date.now() - new Date(cachedDate).getTime() : Infinity;
             var ttl = getAPITTL(url.pathname);
             if (age < ttl) {
-              fetchPromise.catch(function() {});
+              // 缓存新鲜，直接返回
               return cachedResponse;
             }
+            // 缓存过期：先返回旧数据，后台刷新
+            fetchPromise.then(function() {}).catch(function() {});
             return cachedResponse;
           }
           return fetchPromise;

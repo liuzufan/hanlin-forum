@@ -129,11 +129,11 @@ function _hasContent(data) {
   ));
 }
 var _cacheTTL = {
-  '/api/posts': 3 * 60 * 1000,       // 帖子列表 3分钟
+  '/api/posts': 5 * 60 * 1000,       // 帖子列表 5分钟（CDN也缓存15秒）
   '/api/categories': 60 * 60 * 1000,  // 分类 1小时
-  '/api/announcements': 60 * 1000,     // 公告 1分钟
-  '/api/elections': 30 * 1000,        // 评选 30秒
-  '/api/suggestions': 2 * 60 * 1000,  // 建议 2分钟
+  '/api/announcements': 2 * 60 * 1000, // 公告 2分钟
+  '/api/elections': 60 * 1000,         // 评选 1分钟
+  '/api/suggestions': 3 * 60 * 1000,  // 建议 3分钟
 };
 
 function _getTTL(url) {
@@ -685,11 +685,18 @@ async function renderRightSidebar() {
     } catch {}
   }
 
-  // 获取评选排名数据
+  // 获取评选排名数据（使用缓存，60秒刷新）
   let electionRankingHtml = '<div style="text-align:center;padding:16px;color:var(--text-tertiary);font-size:0.8rem">暂无评选活动</div>';
-  try {
-    const elecData = await API.get('/api/elections');
-    const elections = elecData.elections || [];
+  var needElecFetch = !_electionSidebarCache || (Date.now() - _electionSidebarTime) > 60 * 1000;
+  if (needElecFetch) {
+    try {
+      const elecData = await API.get('/api/elections');
+      _electionSidebarCache = elecData;
+      _electionSidebarTime = Date.now();
+    } catch {}
+  }
+  if (_electionSidebarCache && _electionSidebarCache.elections) {
+    const elections = _electionSidebarCache.elections;
     const activeElections = elections.filter(e => e.status === 'active' || e.status === 'ended');
     if (activeElections.length > 0) {
       // 取第一个活跃/已结束的评选
@@ -726,7 +733,7 @@ async function renderRightSidebar() {
         </button>
       `;
     }
-  } catch {}
+  }
 
   return `
     <aside class="sidebar right-sidebar" style="width:280px">
@@ -2719,6 +2726,8 @@ var _shellBuilt = false;       // Shell是否已构建
 var _lastShellKey = '';         // 上次Shell的key（用于判断是否需要重建）
 var _statsCache = null;         // 右侧栏统计缓存
 var _statsCacheTime = 0;        // 统计缓存时间
+var _electionSidebarCache = null; // 评选排名缓存
+var _electionSidebarTime = 0;    // 评选排名缓存时间
 
 function render() {
   // 防抖：使用 requestAnimationFrame 确保在下一帧渲染，避免丢帧
@@ -3619,7 +3628,7 @@ async function init() {
   await render();
   
   // Periodically check notifications (静默，不触发渲染)
-  setInterval(loadNotifications, 60000);
+  setInterval(loadNotifications, 120000);
 }
 
 // Start

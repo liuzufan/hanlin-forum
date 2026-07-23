@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import {
   loadDB, saveDB, getDB, findById, findOne, findAll,
-  insert, update, remove, increment, markDirty, setEnv,
+  insert, update, remove, increment, markDirty, setEnv, forceReloadDB,
 } from '../../database.js';
 
 const JWT_SECRET = 'hanlin-forum-secret-2026';
@@ -14,6 +14,17 @@ function json(data, status = 200) {
     headers: {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
+    },
+  });
+}
+
+// 对GET请求添加短时CDN缓存头
+function jsonCached(data, maxAge = 10) {
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'public, max-age=' + maxAge + ', s-maxage=' + (maxAge * 2),
     },
   });
 }
@@ -672,7 +683,7 @@ async function handleRequest(request) {
           ...cat,
           post_count: db.posts.filter(p => p.category_id === cat.id).length,
         }));
-        return json({ categories: result });
+        return jsonCached({ categories: result }, 300);
       }
 
       // GET /api/posts (list)
@@ -710,7 +721,7 @@ async function handleRequest(request) {
         const paged = posts.slice(offset, offset + limit);
         const formatted = paged.map(p => formatPost(p, currentUserId));
 
-        return json({ posts: formatted, total, page, hasMore: offset + formatted.length < total });
+        return jsonCached({ posts: formatted, total, page, hasMore: offset + formatted.length < total }, 15);
       }
 
       // GET /api/announcements
@@ -725,7 +736,7 @@ async function handleRequest(request) {
               author: author ? { id: author.id, nickname: author.nickname, avatar_color: author.avatar_color, role: author.role } : null,
             };
           });
-        return json({ announcements });
+        return jsonCached({ announcements }, 30);
       }
 
       // GET /api/elections - 获取所有评选活动
@@ -1206,10 +1217,17 @@ async function handleRequest(request) {
 export async function onRequest(context) {
   const { request, env, waitUntil } = context;
   setEnv(env);
-  const response = await handleRequest(request);
-  // 仅在有写操作时才保存数据库，GET 请求跳过保存
+  
+  // 写操作前强制从KV加载最新数据，避免并发覆盖
   if (request.method !== 'GET') {
-    await saveDB();
+    await forceReloadDB();
+  }
+  
+  const response = await handleRequest(request);
+  
+  // 写操作使用 waitUntil 在后台保存，不阻塞响应返回
+  if (request.method !== 'GET') {
+    waitUntil(saveDB());
   }
   return response;
 }
