@@ -1171,7 +1171,7 @@ function renderCommentItem(comment) {
           <span style="font-size:0.7rem;color:var(--text-tertiary);background:var(--bg-surface);padding:1px 6px;border-radius:4px">${escapeHtml(author.department || '')}</span>
           <span class="comment-time">${formatTime(comment.created_at)}</span>
         </div>
-        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? (function() { cacheImage('comment-' + comment.id, comment.image); return `<img src="${escapeHtml(comment.image)}" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openCachedImage('comment-${comment.id}')" onerror="this.style.display='none'">`; })() : ''}</div>
+        <div class="comment-content">${escapeHtml(comment.content)}${comment.image ? (function() { cacheImage('comment-' + comment.id, comment.image); return `<img src="${escapeHtml(comment.image)}" loading="lazy" decoding="async" style="max-width:200px;max-height:200px;border-radius:8px;margin-top:6px;cursor:pointer" onclick="openCachedImage('comment-${comment.id}')" onerror="this.style.display='none'">`; })() : ''}</div>
         <div class="comment-actions">
           <button class="comment-action ${comment.liked ? 'active' : ''}" onclick="likeComment(${comment.id}, this)">
             <i class="${comment.liked ? 'fas' : 'far'} fa-heart"></i> ${comment.likes}
@@ -1684,7 +1684,7 @@ function renderCandidate(candidate, election, isAdmin) {
   else if (election.status !== 'active') noVoteReason = '';
   else if (electionVoteInfo.votes_remaining === 0) noVoteReason = '今日票数已用完';
   var imgHtml = candidate.image
-    ? (function() { cacheImage('cand-' + candidate.id, candidate.image); return `<img src="${escapeHtml(candidate.image)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openCachedImage('cand-${candidate.id}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`; })()
+    ? (function() { cacheImage('cand-' + candidate.id, candidate.image); return `<img src="${escapeHtml(candidate.image)}" loading="lazy" decoding="async" style="width:56px;height:56px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--c-gold)" onclick="openCachedImage('cand-${candidate.id}')" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:none;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`; })()
     : `<div style="width:56px;height:56px;border-radius:50%;background:var(--c-burgundy);display:flex;align-items:center;justify-content:center;color:white;font-size:1.4rem">${escapeHtml(candidate.name.charAt(0))}</div>`;
   return `
     <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;background:var(--bg-surface);border-radius:var(--radius);${hasVoted ? 'border:2px solid var(--c-gold)' : ''}">
