@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const {
   loadDB, getDB, findById, findOne, findAll,
-  insert, update, remove, increment, scheduleSave, ensureDB,
+  insert, update, remove, increment, markDirty, ensureDB,
 } = require('./database');
 
 const app = express();
@@ -49,7 +49,7 @@ function optionalAuth(req, res, next) {
 }
 
 function adminAuth(req, res, next) {
-  if (req.user.role !== 'admin') return res.status(404).json({ error: 'Not Found' });
+  if (!req.user || req.user.role !== 'admin') return res.status(404).json({ error: 'Not Found' });
   next();
 }
 
@@ -436,7 +436,7 @@ app.get('/api/notifications', auth, (req, res) => {
 app.put('/api/notifications/read', auth, (req, res) => {
   const db = getDB();
   db.notifications.forEach(n => { if (n.user_id === req.user.id) n.is_read = 1; });
-  scheduleSave();
+  markDirty();
   res.json({ success: true });
 });
 
@@ -493,7 +493,7 @@ app.delete('/api/admin/posts/:id', auth, adminAuth, (req, res) => {
     if (author && author.post_count > 0) author.post_count -= 1;
   }
 
-  scheduleSave();
+  markDirty();
   res.json({ success: true });
 });
 

@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import {
   getDB, findById, findOne, findAll,
-  insert, update, remove, increment, scheduleSave, ensureDB,
+  insert, update, remove, increment, markDirty, ensureDB,
 } from '../database.js';
 
 const JWT_SECRET = 'hanlin-forum-secret-2026';
@@ -690,7 +690,7 @@ async function handleRequest(request) {
         if (error) return error;
         const db = getDB();
         db.notifications.forEach(n => { if (n.user_id === user.id) n.is_read = 1; });
-        scheduleSave();
+        markDirty();
         return json({ success: true });
       }
     }
@@ -728,7 +728,7 @@ async function handleRequest(request) {
           if (author && author.post_count > 0) author.post_count -= 1;
         }
 
-        scheduleSave();
+        markDirty();
         return json({ success: true });
       }
 
